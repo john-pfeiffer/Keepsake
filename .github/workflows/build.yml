@@ -1,0 +1,123 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  PLUGINVAL_STRICTNESS: 8
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (universal)
+            os: macos-14
+            pluginval_url: https://github.com/Tracktion/pluginval/releases/download/v1.0.3/pluginval_macOS.zip
+          - name: Windows (x64)
+            os: windows-2022
+            pluginval_url: https://github.com/Tracktion/pluginval/releases/download/v1.0.3/pluginval_Windows.zip
+          - name: Linux (x64)
+            os: ubuntu-22.04
+            pluginval_url: https://github.com/Tracktion/pluginval/releases/download/v1.0.3/pluginval_Linux.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Spec §4: neither platform is a port of the other, so all three build on
+      # every push. Linux is not a shipping target but it is the cheapest runner
+      # and catches most portability breakage first.
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+            libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev \
+            ninja-build xvfb
+
+      - name: Set up Ninja
+        if: runner.os != 'Linux'
+        uses: seanmiddleditch/gha-setup-ninja@v4
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-juce-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Unit and offline render tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Engine benchmark
+        shell: bash
+        run: |
+          BIN=$(find build -name 'KeepsakeTests' -o -name 'KeepsakeTests.exe' | head -1)
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a "$BIN" --bench; else "$BIN" --bench; fi
+
+      - name: Fetch pluginval
+        shell: bash
+        run: |
+          curl -sSL -o pluginval.zip "${{ matrix.pluginval_url }}"
+          unzip -o -q pluginval.zip -d pluginval-bin
+          find pluginval-bin -type f | head -20
+
+      # Spec §6: pluginval at strictness 8 on every push.
+      - name: pluginval (VST3)
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            macOS)   PV="pluginval-bin/pluginval.app/Contents/MacOS/pluginval" ;;
+            Windows) PV="pluginval-bin/pluginval.exe" ;;
+            *)       PV="pluginval-bin/pluginval" ;;
+          esac
+          chmod +x "$PV" || true
+
+          VST3=$(find build -name '*.vst3' | head -1)
+          echo "Validating $VST3"
+
+          RUN="$PV --strictness-level ${{ env.PLUGINVAL_STRICTNESS }} --validate-in-process --timeout-ms 300000 --validate $VST3"
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a $RUN; else $RUN; fi
+
+      - name: pluginval (AU)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          PV="pluginval-bin/pluginval.app/Contents/MacOS/pluginval"
+          AU=$(find build -name '*.component' | head -1)
+
+          # The AU has to be registered with the system before it can be validated.
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "$AU" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+
+          "$PV" --strictness-level ${{ env.PLUGINVAL_STRICTNESS }} --validate-in-process \
+                --timeout-ms 300000 --validate "$AU"
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Keepsake-${{ runner.os }}
+          path: |
+            build/Keepsake_artefacts/${{ env.BUILD_TYPE }}/VST3/**
+            build/Keepsake_artefacts/${{ env.BUILD_TYPE }}/AU/**
+            build/Keepsake_artefacts/${{ env.BUILD_TYPE }}/Standalone/**
+          if-no-files-found: warn

@@ -1,0 +1,15 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+
+# Local JUCE checkout. CI (and a clean clone) fetch JUCE via FetchContent instead;
+# see the JUCE section of CMakeLists.txt.
+libs/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.user
+compile_commands.json
