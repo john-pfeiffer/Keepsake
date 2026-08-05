@@ -52,6 +52,16 @@ jobs:
         if: runner.os != 'Linux'
         uses: seanmiddleditch/gha-setup-ninja@v4
 
+      # Without this, `cmake -G Ninja` on the Windows runner picks up whichever
+      # compiler is first on PATH - which is MinGW gcc, not MSVC. JUCE 8 removed
+      # MinGW support, so the build dies inside juceaide during configure. This puts
+      # cl.exe on PATH; the CMakeLists guard catches it loudly if it ever regresses.
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Cache JUCE
         uses: actions/cache@v4
         with:
