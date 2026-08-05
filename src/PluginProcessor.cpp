@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "engine/Analysis.h"
 
 namespace keepsake
 {
@@ -22,22 +23,181 @@ namespace keepsake
         synth.addSound (new KeepsakeSound());
 
         for (int i = 0; i < kNumVoices; ++i)
-            synth.addVoice (new KeepsakeVoice (handles, sourceStore, i));
+            synth.addVoice (new KeepsakeVoice (handles, sourceStore, wavetableStore, i));
 
         // Spec §2.5: oldest-note stealing.
         synth.setNoteStealingEnabled (true);
 
-        startTimerHz (4); // deferred release of retired source buffers
+        pinnedScratch.reserve (kNumVoices * 3);
+
+        startTimerHz (4);                 // deferred release of retired buffers
+        extractionPoller.startTimerHz (50); // debounce needs ~20ms granularity, 4Hz can't
+        extractionWorker.startThread();
     }
 
     KeepsakeProcessor::~KeepsakeProcessor()
     {
+        // Order matters: stop everything that can touch the stores before the
+        // stores (declared earlier, destroyed later) go away.
+        extractionPoller.stopTimer();
         stopTimer();
+        extractionWorker.stopThread (2000); // signals exit + notifies the wait()
     }
 
     void KeepsakeProcessor::timerCallback()
     {
         sourceStore.collectGarbage();
+
+        // Wavetable GC must know which sets voices still hold (mid-crossfade or as
+        // a note's current table): a host that suspends processing mid-note lets
+        // wall-clock retention expire while the pointer is still live.
+        pinnedScratch.clear();
+
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* voice = dynamic_cast<KeepsakeVoice*> (synth.getVoice (i)))
+                voice->getPinnedWavetableSets (pinnedScratch);
+
+        wavetableStore.collectGarbage (pinnedScratch);
+    }
+
+    // =========================================================================
+    // Wavetable extraction
+    // =========================================================================
+
+    std::optional<KeepsakeProcessor::ExtractionRequest> KeepsakeProcessor::makeExtractionRequest()
+    {
+        ExtractionRequest request;
+        request.source = sourceStore.getForMessageThread();
+
+        if (request.source == nullptr)
+            return std::nullopt;
+
+        request.place = (double) handles.place->load();
+        request.captureLengthMs = (double) handles.captureLength->load();
+        request.f0 = analysis::rootFrequencyHz ((double) handles.rootNote->load(),
+                                                (double) handles.rootCents->load());
+        request.numFrames = params::frameCountForChoice (
+            (int) std::lround (handles.toneFrames->load()));
+
+        return request;
+    }
+
+    void KeepsakeProcessor::runExtraction (const ExtractionRequest& request)
+    {
+        const auto window = CaptureWindow::resolve (*request.source,
+                                                    request.place,
+                                                    request.captureLengthMs,
+                                                    request.source->sampleRate);
+
+        wavetableStore.publish (analysis::buildWavetableSet (*request.source, window,
+                                                             request.f0,
+                                                             request.numFrames));
+    }
+
+    void KeepsakeProcessor::extractNow()
+    {
+        if (auto request = makeExtractionRequest())
+            runExtraction (*request);
+        else
+            wavetableStore.publish (nullptr); // no source (e.g. failed restore) -> Tone silent
+    }
+
+    void KeepsakeProcessor::ExtractionWorker::enqueue (ExtractionRequest&& request)
+    {
+        {
+            const juce::ScopedLock sl (slotLock);
+            slot = std::move (request); // latest wins; an unserviced older request is gone
+        }
+
+        // juce::Thread's built-in event, so stopThread() can wake the wait() too.
+        notify();
+    }
+
+    void KeepsakeProcessor::ExtractionWorker::run()
+    {
+        while (! threadShouldExit())
+        {
+            wait (-1);
+
+            // Drain until the slot stays empty: a request arriving mid-build is
+            // picked up immediately after publish, so the store always converges
+            // on the newest values.
+            for (;;)
+            {
+                if (threadShouldExit())
+                    return;
+
+                std::optional<ExtractionRequest> request;
+
+                {
+                    const juce::ScopedLock sl (slotLock);
+                    request.swap (slot);
+                }
+
+                if (! request.has_value())
+                    break;
+
+                owner.runExtraction (*request);
+            }
+        }
+    }
+
+    void KeepsakeProcessor::ExtractionPoller::timerCallback()
+    {
+        const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+
+        const double values[5] = {
+            (double) owner.handles.place->load(),
+            (double) owner.handles.captureLength->load(),
+            (double) owner.handles.rootNote->load(),
+            (double) owner.handles.rootCents->load(),
+            (double) owner.handles.toneFrames->load(),
+        };
+
+        const auto generation = owner.sourceGeneration.load (std::memory_order_acquire);
+
+        bool changed = generation != lastSourceGeneration;
+
+        for (int i = 0; i < 5; ++i)
+            changed = changed || std::abs (values[i] - lastValues[i]) > 1.0e-9;
+
+        if (changed)
+        {
+            std::copy (std::begin (values), std::end (values), std::begin (lastValues));
+            lastSourceGeneration = generation;
+            lastChangeMs = nowMs;
+            dirty = true;
+
+            if (first)
+            {
+                // Startup baseline: don't extract just because the poller woke up
+                // with defaults, only once a source actually exists.
+                first = false;
+                dirty = owner.sourceStore.hasSource();
+            }
+        }
+
+        if (! dirty)
+            return;
+
+        // Trailing debounce (80ms of quiet) so a drag settles before the rebuild -
+        // PLUS a throttle (200ms) so sustained automation still re-extracts: a pure
+        // debounce never fires under a host LFO and Tone would freeze stale. The
+        // throttle exceeds the 30ms swap fade, so fades always complete. This is
+        // the spec's "granular-forward, catching up in steps".
+        const auto quietMs = nowMs - lastChangeMs;
+        const auto sinceRequestMs = nowMs - lastRequestMs;
+
+        if (quietMs >= 80.0 || sinceRequestMs >= 200.0)
+        {
+            if (auto request = owner.makeExtractionRequest())
+            {
+                owner.extractionWorker.enqueue (std::move (*request));
+                lastRequestMs = nowMs;
+            }
+
+            dirty = false;
+        }
     }
 
     // =========================================================================
@@ -225,6 +385,10 @@ namespace keepsake
         embeddedAudioName = sourceName;
         embeddedAudioRate = source != nullptr ? source->sampleRate : 0.0;
         sourceStore.publish (source);
+
+        // The poller watches this and schedules extraction for the new source
+        // (or publishes a null set if the source went away).
+        sourceGeneration.fetch_add (1, std::memory_order_release);
         sourceChanged.sendChangeMessage();
     }
 

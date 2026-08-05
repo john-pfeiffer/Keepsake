@@ -112,6 +112,24 @@ namespace keepsake::params
         layout.add (makeFloat (grainWindow, "Window", Range (0.0f, 1.0f), 0.0f, "", 2));
         layout.add (makeFloat (grainSpread, "Spread", Range (0.0f, 100.0f), 40.0f, " %", 1));
 
+        // --- Tone -----------------------------------------------------------
+        // Focus defaults to full Cloud so the plugin sounds exactly like M2 out of
+        // the box. In M3 this is a plain equal-power blend; M4 adds the coupling.
+        layout.add (makeFloat (focus, "Focus", Range (0.0f, 1.0f), 0.0f, "", 2));
+        layout.add (makeFloat (toneFrame, "Frame", Range (0.0f, 1.0f), 0.0f, "", 2));
+
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { toneFrames, 1 },
+            "Frames",
+            juce::StringArray { "2", "4", "8", "16" },
+            2)); // default 8
+
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { toneFrameWrap, 1 },
+            "Frame Wrap",
+            juce::StringArray { "Loop", "Ping-Pong" },
+            0));
+
         // --- Amp envelope ---------------------------------------------------
         layout.add (makeFloat (ampAttack, "Attack",
                                skewed (1.0f, 5000.0f, 100.0f), 20.0f, " ms", 1));
@@ -140,6 +158,10 @@ namespace keepsake::params
         grainShimmer  = state.getRawParameterValue (params::grainShimmer);
         grainWindow   = state.getRawParameterValue (params::grainWindow);
         grainSpread   = state.getRawParameterValue (params::grainSpread);
+        focus         = state.getRawParameterValue (params::focus);
+        toneFrame     = state.getRawParameterValue (params::toneFrame);
+        toneFrames    = state.getRawParameterValue (params::toneFrames);
+        toneFrameWrap = state.getRawParameterValue (params::toneFrameWrap);
         ampAttack     = state.getRawParameterValue (params::ampAttack);
         ampDecay      = state.getRawParameterValue (params::ampDecay);
         ampSustain    = state.getRawParameterValue (params::ampSustain);

@@ -50,6 +50,23 @@ namespace keepsake
                                   "Stereo spread - per-grain pan randomisation."));
         addAndMakeVisible (cloudPanel);
 
+        // --- Tone -----------------------------------------------------------
+        tonePanel.setColumns (4);
+        tonePanel.addKnob (knob (params::focus, "Focus",
+                                 "Focus - morphs between the Cloud (granular) and Tone "
+                                 "(wavetable) engines. Equal-power blend in this version; "
+                                 "engine coupling arrives in M4."));
+        tonePanel.addKnob (knob (params::toneFrame, "Frame",
+                                 "Frame - scans across the wavetable frames extracted from "
+                                 "the kept moment."));
+        tonePanel.addKnob (knob (params::toneFrames, "Frames",
+                                 "Frames - how many cycles are extracted across the kept "
+                                 "window: 2/4/8/16. Changing it re-extracts."));
+        tonePanel.addKnob (knob (params::toneFrameWrap, "Wrap",
+                                 "Frame Wrap - Loop or Ping-Pong when Frame is scanned or "
+                                 "modulated."));
+        addAndMakeVisible (tonePanel);
+
         // --- Amp envelope ---------------------------------------------------
         ampPanel.setColumns (4);
         ampPanel.addKnob (knob (params::ampAttack, "A", "ENV1 Attack (hardwired to amp)."));
@@ -65,7 +82,7 @@ namespace keepsake
         addAndMakeVisible (outputPanel);
 
         // Honest about what is not built yet, rather than showing dead controls.
-        placeholder.setText ("TONE (wavetable), FOCUS, filter, LFOs, mod matrix and FX arrive in M3-M5.",
+        placeholder.setText ("Filter, LFOs, mod matrix and FX arrive in M4-M5.",
                              juce::dontSendNotification);
         placeholder.setJustificationType (juce::Justification::centred);
         placeholder.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.30f));
@@ -97,7 +114,12 @@ namespace keepsake
         left.removeFromTop (8);
         cloudPanel.setBounds (left);
 
-        ampPanel.setBounds (r.removeFromTop (r.getHeight() / 2));
+        // Right column: Tone on top (Focus lives with it - controls sit on the
+        // side they affect, and Tone is the right-hand engine per spec layout),
+        // then the envelope, then output + the remaining-milestones note.
+        tonePanel.setBounds (r.removeFromTop ((int) (r.getHeight() * 0.45)));
+        r.removeFromTop (8);
+        ampPanel.setBounds (r.removeFromTop ((int) (r.getHeight() * 0.55)));
         r.removeFromTop (8);
         outputPanel.setBounds (r.removeFromLeft (r.getWidth() / 3));
         r.removeFromLeft (8);

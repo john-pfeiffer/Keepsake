@@ -11,7 +11,7 @@ instant across the keyboard.
 
 ## Status
 
-Milestones **M0–M2** of the Keepsake concept & build specification (v0.1 draft, held
+Milestones **M0–M3** of the Keepsake concept & build specification (v0.1 draft, held
 outside this repo) are implemented. Section references in code comments — "spec §2.2"
 and so on — point at that document.
 
@@ -20,13 +20,14 @@ and so on — point at that document.
 | **M0** Scaffold | CMake/JUCE 8, VST3 + AU + Standalone, resizable UI, CI, pluginval | Done |
 | **M1** Capture | File import, zoomable waveform, draggable capture bracket, audition, capture embedded in state | Done |
 | **M2** Cloud | Granular engine, all six grain params, 12-voice poly, amp envelope | Done |
-| **M3** Tone | Root + cycle extraction, mipmapped wavetable, Frame, Place re-extraction | Not started |
-| **M4** Focus + Mod | Focus macro, filter, ENV2, LFOs, mod matrix | Not started |
+| **M3** Tone | Root + cycle extraction, mipmapped wavetable, Frame, Place re-extraction | Done |
+| **M4** Focus + Mod | Focus coupling, filter, ENV2, LFOs, mod matrix | Not started |
 | **M5** FX + Presets + Randomize | Warmth/Chorus/Air, preset browser, Randomize | Not started |
 | **M6** Package | Notarized macOS pkg, Inno Setup installer, GitHub Releases | Not started |
 
-The UI reserves the space that Focus and Tone will occupy and says so on screen, rather
-than showing controls that do nothing.
+The Focus knob ships in M3 as a plain equal-power Cloud/Tone blend; M4 upgrades the
+same parameter with engine coupling. The UI reserves space for the M4-M5 controls
+and says so on screen, rather than showing controls that do nothing.
 
 ### Milestone exit tests
 
@@ -42,6 +43,15 @@ are tests in `tests/`, not claims:
   prove it rendered audio, so silence cannot pass the click check.
 - **M2** — "CPU < ~8% for 8 voices": measured, not assumed. See Benchmark below.
 - **M2** — "12-voice poly": `processor_playsTwelveVoicesAtOnce`.
+- **M3** — "alias-free chromatic playback C1–C7": `tone_aliasFreeAcrossKeyboard_*`
+  render octaves plus mip-boundary notes from a harmonic ("vocal-like") source with
+  Root set correctly and from a seeded drum burst with an arbitrary Root, FFT the
+  steady state (4-term Blackman-Harris), and fail on any off-harmonic-grid spur
+  above −50 dB. A permanent negative control forces the full-bandwidth table at C7
+  and asserts the detector fires — a broken analyzer cannot silently pass.
+- **M3** — "Place automation sweeps without clicks":
+  `processor_placeSweepWithReExtractionIsClickFree` steps Place and re-extracts ten
+  times across a sweep, rendering through every set-swap crossfade.
 
 What is *not* covered here: the spec's manual matrix (Ableton, Logic, Reaper, FL Studio
 at 44.1/48/96k) is a human step before release. Nothing in this repo has been loaded
@@ -90,13 +100,14 @@ Reference figures (Release, 48 kHz, 256-sample blocks, one core of a 4-core clou
 container — a slower machine than the spec's "modern laptop"):
 
 ```
-   1 voices: 0.38 % of one core   (realtime factor 265.1x)
-   4 voices: 1.59 % of one core   (realtime factor  62.8x)
-   8 voices: 3.13 % of one core   (realtime factor  32.0x)
-  12 voices: 4.91 % of one core   (realtime factor  20.4x)
+   1 voices: 0.54 % of one core   (realtime factor 184.8x)
+   4 voices: 2.27 % of one core   (realtime factor  44.1x)
+   8 voices: 4.50 % of one core   (realtime factor  22.2x)
+  12 voices: 6.74 % of one core   (realtime factor  14.8x)
 ```
 
-8 voices at 3.13% is inside the spec's ~8% budget.
+Measured at Focus 0.5 — Cloud and Tone both active on every voice, the worst case.
+8 voices at 4.50% is inside the spec's ~8% budget.
 
 ---
 
@@ -125,8 +136,21 @@ A few decisions worth knowing before editing:
 
 - **Cloud reads the source buffer directly, not a copied capture buffer.** The spec
   calls for Place to be smooth and automatable on Cloud, so grains simply spawn from the
-  current read region — there is no per-Place re-capture cost. (Tone will need the
-  copied window and background re-extraction; that is an M3 concern.)
+  current read region — there is no per-Place re-capture cost.
+- **Tone re-extracts on a background worker with debounce + throttle.** A single
+  dedicated thread rebuilds the wavetable set ~80 ms after Place/Root/Length/Frames
+  stop changing, and at least every ~200 ms during sustained automation (a pure
+  debounce would freeze Tone stale under a host LFO). Voices crossfade to a new set
+  over 30 ms with a shared phase; extraction phase-normalizes every frame's
+  fundamental (FFT bin-1 rotation), so the fade is linear, not equal-power.
+- **Wavetable GC pins voice-held sets.** Voices hold set pointers across blocks (the
+  fade, and a note's lifetime), so `WavetableStore::collectGarbage` skips anything a
+  voice still references — wall-clock retention alone would free a set mid-note if
+  the host suspends processing. Do not simplify this back to the SourceStore rule.
+- **Mip selection is safe-side:** continuous level `log2(inc) + 1`, so both blended
+  levels stay inside the alias limit at every pitch. Plain `log2(inc)` blends a
+  floor level that keeps twice the safe harmonic count — measurably aliased at the
+  top of the keyboard (this was caught by the alias test, not by ear).
 - **Source handover is lock-free on the audio side.** The audio thread reads a plain
   atomic pointer; replaced sources are parked and only freed after two seconds. Do not
   "optimise" that into freeing as soon as the refcount drops — the delay is what makes

@@ -1,5 +1,7 @@
 #include "CaptureBuffer.h"
 
+#include <algorithm>
+
 namespace keepsake
 {
     // =========================================================================
@@ -32,6 +34,54 @@ namespace keepsake
     }
 
     SourceAudio::Ptr SourceStore::getForMessageThread() const
+    {
+        const juce::ScopedLock sl (messageThreadLock);
+        return live;
+    }
+
+    // =========================================================================
+    // WavetableStore
+    // =========================================================================
+
+    void WavetableStore::publish (WavetableSet::Ptr newSet)
+    {
+        // Callable from the extraction worker as well as the message thread -
+        // anything except the audio thread (takes a lock, may free).
+        const juce::ScopedLock sl (messageThreadLock);
+
+        if (live != nullptr)
+            retired.push_back ({ live, juce::Time::getMillisecondCounterHiRes() * 0.001 });
+
+        live = newSet;
+        current.store (live.get(), std::memory_order_release);
+    }
+
+    void WavetableStore::collectGarbage (const std::vector<const WavetableSet*>& pinnedByVoices)
+    {
+        const juce::ScopedLock sl (messageThreadLock);
+
+        const auto now = juce::Time::getMillisecondCounterHiRes() * 0.001;
+
+        for (int i = (int) retired.size(); --i >= 0;)
+        {
+            const auto& r = retired[(size_t) i];
+
+            if (now - r.retiredAtSeconds <= kRetainSeconds)
+                continue;
+
+            // The extension over SourceStore: a set held by a voice (mid-crossfade,
+            // or as a note's current table) stays alive however old it is. Without
+            // this, a host suspending processing mid-note lets wall-clock time pass
+            // with no audio callbacks, and the free races the eventual resume.
+            if (std::find (pinnedByVoices.begin(), pinnedByVoices.end(), r.set.get())
+                != pinnedByVoices.end())
+                continue;
+
+            retired.erase (retired.begin() + i);
+        }
+    }
+
+    WavetableSet::Ptr WavetableStore::getForMessageThread() const
     {
         const juce::ScopedLock sl (messageThreadLock);
         return live;
