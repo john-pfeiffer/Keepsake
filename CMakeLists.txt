@@ -6,6 +6,17 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# JUCE 8 removed MinGW support. Without an MSVC environment, `cmake -G Ninja` on
+# Windows silently selects MinGW gcc and the build fails deep inside juceaide with
+# hundreds of warnings and no obvious cause. Fail here instead, with the fix.
+if (WIN32 AND NOT MSVC)
+    message(FATAL_ERROR
+            "Keepsake requires MSVC on Windows (JUCE 8 removed MinGW support), but "
+            "CMake selected '${CMAKE_CXX_COMPILER_ID}'.\n"
+            "Run from a Developer Command Prompt, or use the Visual Studio generator:\n"
+            "  cmake -B build -G \"Visual Studio 17 2022\" -A x64")
+endif ()
+
 if (APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
