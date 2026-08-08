@@ -31,6 +31,12 @@ namespace keepsake::params
     inline constexpr auto grainWindow  = "grainWindow";  // 0..1 Hann->Tukey->Expodec
     inline constexpr auto grainSpread  = "grainSpread";  // 0..100 %
 
+    // --- Tone (wavetable) engine --------------------------------------------
+    inline constexpr auto focus         = "focus";         // 0..1 Cloud->Tone
+    inline constexpr auto toneFrame     = "toneFrame";     // 0..1 scan across frames
+    inline constexpr auto toneFrames    = "toneFrames";    // choice: 2/4/8/16
+    inline constexpr auto toneFrameWrap = "toneFrameWrap"; // choice: Loop/Ping-Pong
+
     // --- Amp envelope (ENV1, hardwired to amp) ------------------------------
     inline constexpr auto ampAttack  = "ampAttack";  // ms
     inline constexpr auto ampDecay   = "ampDecay";   // ms
@@ -39,6 +45,13 @@ namespace keepsake::params
 
     // --- Output -------------------------------------------------------------
     inline constexpr auto masterGain = "masterGain"; // dB
+
+    /** Maps the toneFrames choice index (0..3) to the actual frame count. */
+    inline constexpr int frameCountForChoice (int index) noexcept
+    {
+        constexpr int counts[] = { 2, 4, 8, 16 };
+        return counts[index < 0 ? 0 : (index > 3 ? 3 : index)];
+    }
 
     /** Builds the full parameter layout. */
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -58,6 +71,10 @@ namespace keepsake::params
         std::atomic<float>* grainShimmer = nullptr;
         std::atomic<float>* grainWindow  = nullptr;
         std::atomic<float>* grainSpread  = nullptr;
+        std::atomic<float>* focus         = nullptr;
+        std::atomic<float>* toneFrame     = nullptr;
+        std::atomic<float>* toneFrames    = nullptr; // choice index 0..3 -> {2,4,8,16}
+        std::atomic<float>* toneFrameWrap = nullptr; // choice index: 0 Loop, 1 Ping-Pong
         std::atomic<float>* ampAttack    = nullptr;
         std::atomic<float>* ampDecay     = nullptr;
         std::atomic<float>* ampSustain   = nullptr;

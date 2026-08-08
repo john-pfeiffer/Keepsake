@@ -46,6 +46,7 @@ namespace keepsake
 
         private:
             KnobPanel cloudPanel { "CLOUD  -  granular" };
+            KnobPanel tonePanel { "TONE  -  wavetable" };
             KnobPanel rootPanel { "KEEPSAKE" };
             KnobPanel ampPanel { "AMP ENVELOPE" };
             KnobPanel outputPanel { "OUTPUT" };

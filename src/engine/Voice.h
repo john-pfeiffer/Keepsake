@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GrainEngine.h"
+#include "ToneEngine.h"
 #include "../Parameters.h"
 
 namespace keepsake
@@ -15,15 +16,17 @@ namespace keepsake
     /**
         One polyphonic voice.
 
-        For M2 this owns a Cloud (granular) unit and the amp envelope. The Tone
-        wavetable unit, the SVF filter and ENV2 land here in M3/M4 - the render path
-        is deliberately shaped so that Focus can crossfade two engine outputs into the
-        same voice buffer without restructuring this class.
+        Owns one Cloud (granular) unit, one Tone (wavetable) unit and the amp
+        envelope. Cloud renders into the stereo voice buffer, Tone into a mono
+        scratch; the two are blended by the Focus parameter (equal-power - the
+        engines are uncorrelated) before the envelope. The SVF filter and ENV2
+        land here in M4.
     */
     class KeepsakeVoice : public juce::SynthesiserVoice
     {
     public:
-        KeepsakeVoice (const params::Handles& handles, const SourceStore& store, int voiceIndex);
+        KeepsakeVoice (const params::Handles& handles, const SourceStore& store,
+                       const WavetableStore& wavetables, int voiceIndex);
 
         bool canPlaySound (juce::SynthesiserSound* sound) override
         {
@@ -44,18 +47,31 @@ namespace keepsake
 
         int getActiveGrainCount() const noexcept { return cloud.getActiveGrainCount(); }
 
+        /** Message thread. Appends the wavetable sets this voice still holds, for
+            WavetableStore::collectGarbage's pin list. */
+        void getPinnedWavetableSets (std::vector<const WavetableSet*>& out) const
+        {
+            tone.getPinnedSets (out);
+        }
+
+        ToneEngine& getToneEngineForTests() noexcept { return tone; }
+
     private:
         void updateEnvelopeParameters();
         double computePlaybackRatio() const;
 
         const params::Handles& params;
         const SourceStore& sources;
+        const WavetableStore& wavetables;
 
         GrainEngine cloud;
+        ToneEngine tone;
         juce::ADSR adsr;
         juce::ADSR::Parameters adsrParams;
 
         juce::AudioBuffer<float> voiceBuffer; // pre-allocated in setCurrentPlaybackSampleRate
+        juce::AudioBuffer<float> toneBuffer;  // mono Tone scratch, same capacity
+        juce::LinearSmoothedValue<float> cloudGain, toneGain; // equal-power focus blend
 
         int noteNumber = 60;
         float noteVelocity = 1.0f;

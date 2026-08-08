@@ -71,6 +71,79 @@ namespace keepsake
     };
 
     /**
+        One immutable set of mipmapped wavetable frames extracted from a capture
+        window. Built by Analysis on a background thread; never mutated after
+        publication (numFrames lives in here so a Frames-count change is just
+        another set swap, with no special case in the oscillator).
+    */
+    class WavetableSet : public juce::ReferenceCountedObject
+    {
+    public:
+        using Ptr = juce::ReferenceCountedObjectPtr<WavetableSet>;
+
+        static constexpr int kFrameSize = 2048;
+        /** Levels 0..10 keep 1024 >> L harmonics; level 10 is a pure fundamental. */
+        static constexpr int kNumMipLevels = 11;
+
+        int numFrames = 0;
+        double sampleRate = 44100.0;
+        double rootHz = 0.0;
+
+        /** Layout: [frame][mipLevel][sample], contiguous. */
+        std::vector<float> data;
+
+        const float* getTable (int frame, int mipLevel) const noexcept
+        {
+            return data.data()
+                   + ((size_t) frame * kNumMipLevels + (size_t) mipLevel) * kFrameSize;
+        }
+    };
+
+    /**
+        Publishes a WavetableSet to the audio thread. Mirrors SourceStore's
+        atomic-pointer + deferred-release pattern, with one deliberate extension:
+
+        Voices hold raw set pointers ACROSS blocks - for the ~30ms swap crossfade and
+        for the whole lifetime of a note - not just within one callback. If the host
+        suspends processing (transport stop, bypass) mid-note, wall-clock retention
+        alone would free a set a voice still holds. collectGarbage() therefore takes
+        the list of pointers currently pinned by voices and skips them regardless of
+        age. Callers must gather that list every time; passing an empty list when
+        voices exist reintroduces the use-after-free.
+    */
+    class WavetableStore
+    {
+    public:
+        static constexpr double kRetainSeconds = 2.0;
+
+        /** Any non-audio thread. Publishes a new set (may be nullptr = no keepsake). */
+        void publish (WavetableSet::Ptr newSet);
+
+        /** Message thread. Frees retired sets that are old enough AND not pinned. */
+        void collectGarbage (const std::vector<const WavetableSet*>& pinnedByVoices);
+
+        /** Audio thread. May return nullptr. See class comment for lifetime rules. */
+        WavetableSet* getForAudioThread() const noexcept
+        {
+            return current.load (std::memory_order_acquire);
+        }
+
+        WavetableSet::Ptr getForMessageThread() const;
+
+    private:
+        struct Retired
+        {
+            WavetableSet::Ptr set;
+            double retiredAtSeconds = 0.0;
+        };
+
+        std::atomic<WavetableSet*> current { nullptr };
+        WavetableSet::Ptr live;
+        std::vector<Retired> retired;
+        juce::CriticalSection messageThreadLock;
+    };
+
+    /**
         File import, and serialisation of the imported audio into plugin state.
 
         Spec §2.1: the full source file is embedded in the preset so a keepsake survives

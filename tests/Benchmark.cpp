@@ -20,7 +20,7 @@ namespace ktest
 
         std::cout << "\nKeepsake engine benchmark\n"
                   << "  sample rate " << sampleRate << " Hz, block " << blockSize << "\n"
-                  << "  (CPU % is the share of one core needed to keep up in real time)\n\n";
+                  << "  (CPU % is the share of one core needed to keep up in real time)\n  Focus 0.5: Cloud and Tone both active on every voice\n\n";
 
         for (int numVoices : { 1, 4, 8, 12 })
         {
@@ -54,6 +54,12 @@ namespace ktest
 
             proc.setStateInformation (block.getData(), (int) block.getSize());
             proc.prepareToPlay (sampleRate, blockSize);
+
+            // Worst case for M3: both engines running on every voice.
+            proc.extractNow();
+
+            if (auto* focus = proc.getState().getParameter ("focus"))
+                focus->setValueNotifyingHost (0.5f);
 
             juce::AudioBuffer<float> audio (2, blockSize);
 

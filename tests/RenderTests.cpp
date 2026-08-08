@@ -100,6 +100,7 @@ KTEST_CASE (processor_hasAllExpectedParametersExposedToTheHost)
         params::place, params::captureLength, params::rootNote, params::rootCents,
         params::grainSize, params::grainDensity, params::grainDrift, params::grainShimmer,
         params::grainWindow, params::grainSpread,
+        params::focus, params::toneFrame, params::toneFrames, params::toneFrameWrap,
         params::ampAttack, params::ampDecay, params::ampSustain, params::ampRelease,
         params::masterGain
     };
@@ -382,3 +383,173 @@ KTEST_CASE (processor_auditionStartsAndStopsWithoutClicking)
                 "audition start/stop clicked: step of "
                     + juce::String (ktest::maxDiscontinuity (out), 4));
 }
+
+// =============================================================================
+// M3: Tone engine through the processor
+// =============================================================================
+
+namespace
+{
+    void setParam (KeepsakeProcessor& proc, const char* id, float plainValue)
+    {
+        auto* p = proc.getState().getParameter (id);
+        p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
+    }
+}
+
+KTEST_CASE (processor_focusZeroIsBitIdenticalToCloudOnly)
+{
+    constexpr double sampleRate = 48000.0;
+
+    auto render = [&] (bool withExtraction)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+
+        if (withExtraction)
+            proc.extractNow();
+
+        return renderMidi (proc, { 60 }, 24000, 512, sampleRate);
+    };
+
+    // Focus defaults to 0 (full Cloud). With wavetables extracted and without,
+    // the render must not differ by a single bit - the Tone path is genuinely
+    // skipped, not just quiet.
+    const auto without = render (false);
+    const auto with = render (true);
+
+    EXPECT_TRUE (without.getMagnitude (0, without.getNumSamples()) > 0.001f);
+
+    float worst = 0.0f;
+    for (int i = 0; i < without.getNumSamples(); ++i)
+        worst = juce::jmax (worst, std::abs (without.getSample (0, i) - with.getSample (0, i)));
+
+    EXPECT_MSG (! (worst > 0.0f),
+                "focus=0 render changed when wavetables exist: diff " + juce::String (worst, 8));
+}
+
+KTEST_CASE (processor_fullFocusPlaysTheToneEngine)
+{
+    constexpr double sampleRate = 48000.0;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, 512);
+    giveProcessorASource (proc, sampleRate);
+    proc.extractNow();
+
+    setParam (proc, params::focus, 1.0f);
+
+    const auto out = renderMidi (proc, { 60 }, 24000, 512, sampleRate);
+
+    EXPECT_TRUE (ktest::isFinite (out));
+    EXPECT_MSG (out.getMagnitude (0, out.getNumSamples()) > 0.001f,
+                "full-Tone render was silent");
+    EXPECT_MSG (ktest::maxDiscontinuity (out) < 0.25f,
+                "full-Tone render clicked: step "
+                    + juce::String (ktest::maxDiscontinuity (out), 4));
+}
+
+KTEST_CASE (processor_toneWithoutExtractionIsSilentNotACrash)
+{
+    constexpr double sampleRate = 48000.0;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, 512);
+    giveProcessorASource (proc, sampleRate);
+    // no extractNow(): the async worker never runs in the harness
+
+    setParam (proc, params::focus, 1.0f);
+
+    const auto out = renderMidi (proc, { 60 }, 8192, 512, sampleRate);
+
+    EXPECT_TRUE (ktest::isFinite (out));
+    EXPECT_NEAR ((double) out.getMagnitude (0, out.getNumSamples()), 0.0, 1.0e-6);
+}
+
+/** M3 exit test: Place automation sweeps without clicks - stepping Place and
+    re-extracting between blocks exercises the swap crossfade deterministically
+    (the swap starts at a block boundary; determinism-sensitive tests never swap
+    mid-render, which is why this one only asserts continuity). */
+KTEST_CASE (processor_placeSweepWithReExtractionIsClickFree)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 48000, blockSize = 256;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, blockSize);
+    giveProcessorASource (proc, sampleRate);
+    proc.extractNow();
+
+    setParam (proc, params::focus, 0.5f); // both engines running - worst case
+
+    juce::AudioBuffer<float> out (2, numSamples);
+    out.clear();
+    juce::AudioBuffer<float> block (2, blockSize);
+
+    bool noteSent = false;
+    int blockIndex = 0;
+
+    for (int pos = 0; pos < numSamples; pos += blockSize)
+    {
+        // ~10 extractions across the sweep, i.e. the spec's "catching up in
+        // steps" cadence, each one a fresh set swap mid-note.
+        if (blockIndex % 20 == 0)
+        {
+            setParam (proc, params::place, (float) pos / (float) numSamples);
+            proc.extractNow();
+        }
+
+        juce::MidiBuffer midi;
+
+        if (! noteSent)
+        {
+            midi.addEvent (juce::MidiMessage::noteOn (1, 57, 0.8f), 0);
+            noteSent = true;
+        }
+
+        block.clear();
+        proc.processBlock (block, midi);
+
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (ch, pos, block, ch, 0, juce::jmin (blockSize, numSamples - pos));
+
+        ++blockIndex;
+    }
+
+    EXPECT_TRUE (ktest::isFinite (out));
+    EXPECT_MSG (out.getMagnitude (0, numSamples) > 0.001f, "place sweep rendered silence");
+    EXPECT_MSG (ktest::maxDiscontinuity (out) < 0.25f,
+                "place sweep with re-extraction clicked: step "
+                    + juce::String (ktest::maxDiscontinuity (out), 4));
+}
+
+KTEST_CASE (processor_garbageRestoreDoesNotBreakExtraction)
+{
+    constexpr double sampleRate = 48000.0;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, 512);
+
+    // Garbage restore leaves no source; extractNow must publish a null set (Tone
+    // silent) rather than crash or extract against nothing.
+    juce::MemoryBlock junk (512);
+    juce::Random rng (99);
+    for (size_t i = 0; i < junk.getSize(); ++i)
+        junk[(int) i] = (char) rng.nextInt (256);
+
+    proc.setStateInformation (junk.getData(), (int) junk.getSize());
+    proc.extractNow();
+
+    setParam (proc, params::focus, 1.0f);
+    const auto out = renderMidi (proc, { 60 }, 4096, 256, sampleRate);
+    EXPECT_TRUE (ktest::isFinite (out));
+
+    // And a real source afterwards recovers the full path.
+    giveProcessorASource (proc, sampleRate);
+    proc.extractNow();
+
+    const auto out2 = renderMidi (proc, { 60 }, 24000, 256, sampleRate);
+    EXPECT_TRUE (out2.getMagnitude (0, out2.getNumSamples()) > 0.001f);
+}
+

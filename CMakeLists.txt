@@ -72,8 +72,10 @@ target_sources(Keepsake PRIVATE
         src/PluginProcessor.cpp
         src/PluginEditor.cpp
         src/Parameters.cpp
+        src/engine/Analysis.cpp
         src/engine/CaptureBuffer.cpp
         src/engine/GrainEngine.cpp
+        src/engine/ToneEngine.cpp
         src/engine/Voice.cpp
         src/ui/WaveformView.cpp
         src/ui/ControlPanels.cpp)
@@ -112,8 +114,10 @@ if (KEEPSAKE_BUILD_TESTS)
     target_sources(KeepsakeTests PRIVATE
             tests/TestMain.cpp
             tests/TestHarness.cpp
+            tests/AnalysisTests.cpp
             tests/CaptureBufferTests.cpp
             tests/GrainEngineTests.cpp
+            tests/ToneEngineTests.cpp
             tests/RenderTests.cpp
             tests/Benchmark.cpp)
 
