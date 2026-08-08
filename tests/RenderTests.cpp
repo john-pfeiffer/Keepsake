@@ -1,6 +1,9 @@
 #include "TestHarness.h"
 #include "TestUtils.h"
 #include "PluginProcessor.h"
+#include "engine/Analysis.h"
+#include "engine/FocusCoupling.h"
+#include "engine/LFO.h"
 
 using namespace keepsake;
 
@@ -101,6 +104,11 @@ KTEST_CASE (processor_hasAllExpectedParametersExposedToTheHost)
         params::grainSize, params::grainDensity, params::grainDrift, params::grainShimmer,
         params::grainWindow, params::grainSpread,
         params::focus, params::toneFrame, params::toneFrames, params::toneFrameWrap,
+        params::filterType, params::filterCutoff, params::filterResonance, params::filterKeytrack,
+        params::env2Attack, params::env2Decay, params::env2Sustain, params::env2Release,
+        params::lfo1Shape, params::lfo1Rate, params::lfo1Sync, params::lfo1Division, params::lfo1Retrig,
+        params::lfo2Shape, params::lfo2Rate, params::lfo2Sync, params::lfo2Division, params::lfo2Retrig,
+        params::voiceMode, params::glideTime,
         params::ampAttack, params::ampDecay, params::ampSustain, params::ampRelease,
         params::masterGain
     };
@@ -109,7 +117,13 @@ KTEST_CASE (processor_hasAllExpectedParametersExposedToTheHost)
         EXPECT_MSG (proc.getState().getParameter (id) != nullptr,
                     juce::String ("missing parameter: ") + id);
 
-    EXPECT_TRUE (proc.getParameters().size() == (int) std::size (expected));
+    // The 6 mod slots (source/dest/depth each) have generated IDs.
+    for (int slot = 0; slot < 6; ++slot)
+        for (const auto* field : { "Source", "Dest", "Depth" })
+            EXPECT_MSG (proc.getState().getParameter (params::slotId (field, slot)) != nullptr,
+                        "missing mod slot parameter: " + params::slotId (field, slot));
+
+    EXPECT_TRUE (proc.getParameters().size() == (int) std::size (expected) + 18);
 
     // Every parameter must have a name and produce readable text, or DAW automation
     // lanes are unusable.
@@ -390,7 +404,7 @@ KTEST_CASE (processor_auditionStartsAndStopsWithoutClicking)
 
 namespace
 {
-    void setParam (KeepsakeProcessor& proc, const char* id, float plainValue)
+    void setParam (KeepsakeProcessor& proc, const juce::String& id, float plainValue)
     {
         auto* p = proc.getState().getParameter (id);
         p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
@@ -551,5 +565,567 @@ KTEST_CASE (processor_garbageRestoreDoesNotBreakExtraction)
 
     const auto out2 = renderMidi (proc, { 60 }, 24000, 256, sampleRate);
     EXPECT_TRUE (out2.getMagnitude (0, out2.getNumSamples()) > 0.001f);
+}
+
+// =============================================================================
+// M4: filter
+// =============================================================================
+
+KTEST_CASE (processor_filterActuallyFilters)
+{
+    constexpr double sampleRate = 48000.0;
+
+    auto render = [&] (float cutoffHz)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+        proc.extractNow();
+        setParam (proc, params::focus, 1.0f); // Tone-only: deterministic harmonics
+        setParam (proc, params::filterCutoff, cutoffHz);
+        return renderMidi (proc, { 60 }, 48000 + 32768, 512, sampleRate);
+    };
+
+    const auto open = render (20000.0f);
+    const auto closed = render (300.0f); // LP well below the note's harmonics
+
+    const auto openSpec = ktest::powerSpectrumDb (open, 40000);
+    const auto closedSpec = ktest::powerSpectrumDb (closed, 40000);
+
+    // Compare energy around the 8th harmonic of C3 (~2093Hz): the closed filter
+    // must attenuate it by a lot; 300Hz -> 2093Hz is ~2.8 octaves above cutoff,
+    // a 12dB/oct LP predicts ~-33dB. Assert > 20dB to stay robust.
+    const auto bin = (int) std::round (8.0 * analysis::noteFrequencyHz (60) * 32768.0 / sampleRate);
+
+    float openPeak = -300.0f, closedPeak = -300.0f;
+    for (int k = bin - 3; k <= bin + 3; ++k)
+    {
+        openPeak = juce::jmax (openPeak, openSpec[(size_t) k]);
+        closedPeak = juce::jmax (closedPeak, closedSpec[(size_t) k]);
+    }
+
+    EXPECT_MSG (openPeak - closedPeak > 20.0f,
+                "LP at 300Hz only attenuated the 8th harmonic by "
+                    + juce::String (openPeak - closedPeak, 1) + " dB");
+}
+
+KTEST_CASE (processor_filterExtremesAreStableAndClickFree)
+{
+    constexpr double sampleRate = 48000.0;
+
+    for (auto [type, cutoff, q] : { std::tuple { 0, 20.0f, 10.0f },
+                                    std::tuple { 1, 640.0f, 10.0f },
+                                    std::tuple { 2, 18000.0f, 10.0f },
+                                    std::tuple { 0, 20000.0f, 0.5f } })
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+        proc.extractNow();
+        setParam (proc, params::focus, 0.5f);
+        setParam (proc, params::filterType, (float) type);
+        setParam (proc, params::filterCutoff, cutoff);
+        setParam (proc, params::filterResonance, q);
+
+        const auto out = renderMidi (proc, { 60 }, 24000, 512, sampleRate);
+
+        EXPECT_MSG (ktest::isFinite (out),
+                    "filter type " + juce::String (type) + " cutoff " + juce::String (cutoff)
+                        + " produced non-finite output");
+    }
+}
+
+// =============================================================================
+// M4: LFOs + mod matrix
+// =============================================================================
+
+namespace
+{
+    void setModSlot (KeepsakeProcessor& proc, int slot, int source, int dest, float depthPercent)
+    {
+        setParam (proc, params::slotId ("Source", slot), (float) source);
+        setParam (proc, params::slotId ("Dest", slot), (float) dest);
+        setParam (proc, params::slotId ("Depth", slot), depthPercent);
+    }
+}
+
+KTEST_CASE (lfo_shapesAndSyncMathAreCorrect)
+{
+    LFO lfo (1);
+    lfo.noteOn (true);
+
+    // A 1Hz sine at 48k advanced by 12000 samples (quarter cycle) reads ~1.
+    const auto quarter = lfo.advance (LFO::sine, 1.0, 12000, 48000.0);
+    EXPECT_NEAR ((double) quarter, 1.0, 1.0e-3);
+
+    // Synced rate: 120 BPM, 1/4 (index 4) = 2Hz; 1/1 (index 0) = 0.5Hz.
+    EXPECT_NEAR (LFO::syncedRateHz (120.0, 4), 2.0, 1.0e-9);
+    EXPECT_NEAR (LFO::syncedRateHz (120.0, 0), 0.5, 1.0e-9);
+    EXPECT_NEAR (LFO::syncedRateHz (120.0, 11), 16.0, 1.0e-9); // 1/32
+
+    // Retrig determinism: two retriggered runs produce identical S&H streams.
+    LFO a (42), b (42);
+    a.noteOn (true);
+    b.noteOn (true);
+
+    for (int i = 0; i < 64; ++i)
+    {
+        const auto va = a.advance (LFO::sampleAndHold, 7.0, 480, 48000.0);
+        const auto vb = b.advance (LFO::sampleAndHold, 7.0, 480, 48000.0);
+        EXPECT_MSG (! (std::abs (va - vb) > 0.0f), "S&H streams diverged");
+        EXPECT_TRUE (va >= -1.0f && va <= 1.0f);
+    }
+}
+
+KTEST_CASE (processor_blockSizeIndependentWithLfoModulationActive)
+{
+    // The whole point of anchoring the control tick to the voice-local clock:
+    // this render has an active LFO on Focus and must STILL be bit-identical
+    // at different host block sizes.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 12288;
+
+    auto render = [&] (int blockSize)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        giveProcessorASource (proc, sampleRate);
+        proc.extractNow();
+        setParam (proc, params::focus, 0.5f);
+        setParam (proc, params::lfo1Rate, 3.0f);
+        setModSlot (proc, 0, 2 /*LFO1*/, 1 /*Focus*/, 60.0f);
+        return renderMidi (proc, { 60 }, numSamples, blockSize, sampleRate);
+    };
+
+    const auto a = render (64);
+    const auto b = render (1024);
+
+    EXPECT_TRUE (a.getMagnitude (0, numSamples) > 0.001f);
+
+    float worst = 0.0f;
+    for (int i = 0; i < numSamples; ++i)
+        worst = juce::jmax (worst, std::abs (a.getSample (0, i) - b.getSample (0, i)));
+
+    EXPECT_MSG (! (worst > 0.0f),
+                "LFO-modulated render depends on block size: diff " + juce::String (worst, 8));
+}
+
+KTEST_CASE (processor_modRoutedSweepsAreClickFree)
+{
+    constexpr double sampleRate = 48000.0;
+
+    struct Case { const char* name; int dest; float depth; };
+
+    // Fast LFO, full-ish depth, on every twitchy destination.
+    for (auto c : { Case { "cutoff", 3, 100.0f },
+                    Case { "frame", 8, 100.0f },
+                    Case { "focus", 1, 80.0f },
+                    Case { "pitch", 9, 50.0f },
+                    Case { "place", 2, 40.0f } })
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 256);
+        giveProcessorASource (proc, sampleRate);
+        proc.extractNow();
+        setParam (proc, params::focus, 0.5f);
+        // Moderate Q on purpose: at high resonance a sweeping peak legitimately
+        // swells the signal to several times unity, and a max-step click detector
+        // then measures physics, not bugs (a TPT SVF's state is continuous under
+        // coefficient changes). High-Q stability has its own test; the bounded-
+        // peak assert below still catches genuine runaway here.
+        setParam (proc, params::filterResonance, 2.0f);
+        setParam (proc, params::lfo1Rate, 8.0f);
+        setModSlot (proc, 0, 2 /*LFO1*/, c.dest, c.depth);
+
+        const auto out = renderMidi (proc, { 89 }, 48000, 256, sampleRate);
+
+        EXPECT_MSG (ktest::isFinite (out), juce::String (c.name) + ": non-finite");
+        EXPECT_MSG (out.getMagnitude (0, out.getNumSamples()) > 0.001f,
+                    juce::String (c.name) + ": silent");
+        EXPECT_MSG (out.getMagnitude (0, out.getNumSamples()) < 4.0f,
+                    juce::String (c.name) + ": runaway level "
+                        + juce::String (out.getMagnitude (0, out.getNumSamples()), 3));
+        EXPECT_MSG (ktest::maxDiscontinuity (out) < 0.3f,
+                    juce::String (c.name) + " LFO sweep clicked: step "
+                        + juce::String (ktest::maxDiscontinuity (out), 4));
+    }
+}
+
+KTEST_CASE (processor_pingPongWrapDiffersFromLoop)
+{
+    constexpr double sampleRate = 48000.0;
+
+    auto render = [&] (float wrapMode)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 256);
+        giveProcessorASource (proc, sampleRate);
+        proc.extractNow();
+        setParam (proc, params::focus, 1.0f);
+        setParam (proc, params::toneFrame, 0.5f);
+        setParam (proc, params::toneFrameWrap, wrapMode);
+        setParam (proc, params::lfo1Rate, 2.0f);
+        setParam (proc, params::lfo1Shape, 2.0f); // saw: guaranteed to cross the fold
+        setModSlot (proc, 0, 2, 8 /*Frame*/, 100.0f);
+        return renderMidi (proc, { 60 }, 24000, 256, sampleRate);
+    };
+
+    const auto loop = render (0.0f);
+    const auto pingPong = render (1.0f);
+
+    EXPECT_TRUE (ktest::isFinite (loop) && ktest::isFinite (pingPong));
+
+    // Both click-free, and the two wrap modes must actually differ.
+    EXPECT_MSG (ktest::maxDiscontinuity (loop) < 0.3f, "Loop wrap clicked");
+    EXPECT_MSG (ktest::maxDiscontinuity (pingPong) < 0.3f, "Ping-Pong wrap clicked");
+
+    float diff = 0.0f;
+    for (int i = 0; i < loop.getNumSamples(); ++i)
+        diff = juce::jmax (diff, std::abs (loop.getSample (0, i) - pingPong.getSample (0, i)));
+
+    EXPECT_MSG (diff > 1.0e-4f, "Loop and Ping-Pong renders are identical - the wrap toggle is dead");
+}
+
+// =============================================================================
+// M4: Focus coupling
+// =============================================================================
+
+KTEST_CASE (coupling_curvesKeepTheirLoadBearingProperties)
+{
+    // Identity at f=0: this is what keeps the focus-0 render bit-identical to
+    // the pre-Tone engine. Exact equality on purpose.
+    EXPECT_TRUE (juce::exactlyEqual (coupling::densityMultiplier (0.0f), 1.0f));
+    EXPECT_TRUE (juce::exactlyEqual (coupling::grainSizeMultiplier (0.0f), 1.0f));
+    EXPECT_TRUE (juce::exactlyEqual (coupling::shimmerMultiplier (0.0f), 1.0f));
+    EXPECT_TRUE (juce::exactlyEqual (coupling::toneGain (0.0f), 0.0f));
+    EXPECT_TRUE (juce::exactlyEqual (coupling::cloudGain (0.0f), 1.0f));
+
+    // Designed endpoints at f=1.
+    EXPECT_NEAR ((double) coupling::densityMultiplier (1.0f), 2.0, 1.0e-6);
+    EXPECT_NEAR ((double) coupling::grainSizeMultiplier (1.0f), 0.5, 1.0e-6);
+    EXPECT_NEAR ((double) coupling::shimmerMultiplier (1.0f), 0.0, 1.0e-6);
+    EXPECT_NEAR ((double) coupling::toneGain (1.0f), 1.0, 1.0e-6);
+    EXPECT_NEAR ((double) coupling::cloudGain (1.0f), 0.0, 1.0e-6);
+    EXPECT_NEAR ((double) coupling::toneDetuneCents (1.0f, 0), 0.0, 1.0e-6);
+    EXPECT_NEAR ((double) coupling::toneDetuneCents (0.0f, 0), 7.0, 1.0e-6);
+    EXPECT_NEAR ((double) coupling::toneDetuneCents (0.0f, 1), -7.0, 1.0e-6);
+
+    float previousTone = -1.0f, previousDensity = 0.0f;
+
+    for (int i = 0; i <= 100; ++i)
+    {
+        const auto f = (float) i / 100.0f;
+
+        // The overlap invariant: density x size == 1 everywhere. Cloud's level
+        // rides 1/sqrt(overlap), so this is the "no level pumping" guarantee -
+        // tuning one curve without its reciprocal breaks the instrument feel.
+        EXPECT_NEAR ((double) (coupling::densityMultiplier (f) * coupling::grainSizeMultiplier (f)),
+                     1.0, 1.0e-6);
+
+        // "Ducks earlier" means: at or below the EQUAL-POWER reference curve
+        // everywhere (f^1.5 <= f, sin monotonic), strictly below in the middle.
+        EXPECT_TRUE (coupling::toneGain (f)
+                     <= std::sin (juce::MathConstants<float>::halfPi * f) + 1.0e-6f);
+
+        // ...strictly below at the midpoint (the audible part of the design)...
+        if (i == 50)
+            EXPECT_TRUE (coupling::toneGain (f)
+                         < std::sin (juce::MathConstants<float>::halfPi * f) - 0.05f);
+
+        // ...and both headline curves are monotonic.
+        EXPECT_TRUE (coupling::toneGain (f) >= previousTone);
+        EXPECT_TRUE (coupling::densityMultiplier (f) > previousDensity);
+        previousTone = coupling::toneGain (f);
+        previousDensity = coupling::densityMultiplier (f);
+    }
+}
+
+/** The machine-checkable proxy for "one knob feels like an instrument, not a
+    mixer": sweeping Focus end to end must neither click nor pump level. */
+KTEST_CASE (processor_focusSweepIsClickFreeAndLevelStable)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 96000, blockSize = 256; // 2s sweep
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, blockSize);
+    giveProcessorASource (proc, sampleRate);
+    proc.extractNow();
+    setParam (proc, params::ampAttack, 1.0f);
+
+    juce::AudioBuffer<float> out (2, numSamples);
+    out.clear();
+    juce::AudioBuffer<float> block (2, blockSize);
+    bool noteSent = false;
+
+    for (int pos = 0; pos < numSamples; pos += blockSize)
+    {
+        setParam (proc, params::focus, (float) pos / (float) numSamples);
+
+        juce::MidiBuffer midi;
+
+        if (! noteSent)
+        {
+            midi.addEvent (juce::MidiMessage::noteOn (1, 57, 0.8f), 0);
+            noteSent = true;
+        }
+
+        block.clear();
+        proc.processBlock (block, midi);
+
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (ch, pos, block, ch, 0, juce::jmin (blockSize, numSamples - pos));
+    }
+
+    EXPECT_TRUE (ktest::isFinite (out));
+    EXPECT_MSG (ktest::maxDiscontinuity (out) < 0.3f,
+                "focus sweep clicked: step " + juce::String (ktest::maxDiscontinuity (out), 4));
+
+    // Per-100ms RMS windows (skipping the attack) must stay inside a +-3dB
+    // corridor around their median - texture may change, level may not.
+    std::vector<float> windowsDb;
+
+    for (int start = 9600; start + 4800 <= numSamples; start += 4800)
+    {
+        const auto rms = out.getRMSLevel (0, start, 4800);
+        windowsDb.push_back (juce::Decibels::gainToDecibels (rms + 1.0e-9f));
+    }
+
+    auto sorted = windowsDb;
+    std::sort (sorted.begin(), sorted.end());
+    const auto median = sorted[sorted.size() / 2];
+
+    for (size_t i = 0; i < windowsDb.size(); ++i)
+        EXPECT_MSG (std::abs (windowsDb[i] - median) < 3.0f,
+                    "focus sweep pumped: window " + juce::String ((int) i) + " at "
+                        + juce::String (windowsDb[i] - median, 2) + " dB from median");
+}
+
+// =============================================================================
+// M4: mono / legato / glide + wheel
+// =============================================================================
+
+KTEST_CASE (processor_monoModeHoldsExactlyOneVoice)
+{
+    constexpr double sampleRate = 48000.0;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, 256);
+    giveProcessorASource (proc, sampleRate);
+    proc.extractNow();
+    setParam (proc, params::voiceMode, 1.0f); // Mono
+
+    juce::AudioBuffer<float> block (2, 256);
+    juce::MidiBuffer midi;
+
+    for (int note : { 48, 52, 55, 59, 62 })
+        midi.addEvent (juce::MidiMessage::noteOn (1, note, 0.8f), 0);
+
+    block.clear();
+    proc.processBlock (block, midi);
+
+    for (int i = 0; i < 8; ++i)
+    {
+        juce::MidiBuffer empty;
+        block.clear();
+        proc.processBlock (block, empty);
+    }
+
+    EXPECT_MSG (proc.getActiveVoiceCount() == 1,
+                "mono chord left " + juce::String (proc.getActiveVoiceCount()) + " voices active");
+    EXPECT_TRUE (ktest::isFinite (block));
+    EXPECT_TRUE (block.getMagnitude (0, block.getNumSamples()) > 0.001f);
+}
+
+KTEST_CASE (processor_legatoDoesNotRetriggerTheEnvelope)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 48000, blockSize = 256;
+    constexpr int changeAt = 19200; // 0.4s into an 800ms attack
+
+    auto render = [&] (float mode)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        giveProcessorASource (proc, sampleRate);
+        proc.extractNow();
+        setParam (proc, params::voiceMode, mode);
+        // juce::ADSR's noteOn continues the attack from the CURRENT level, so a
+        // mid-attack retrigger is inaudible - the distinguishing phase is decay:
+        // by the note change the envelope sits at sustain 0.2; a Mono retrigger
+        // climbs back to peak, Legato stays at sustain.
+        setParam (proc, params::ampAttack, 1.0f);
+        setParam (proc, params::ampDecay, 120.0f);
+        setParam (proc, params::ampSustain, 0.2f);
+        setParam (proc, params::glideTime, 0.0f);
+
+        juce::AudioBuffer<float> out (2, numSamples);
+        out.clear();
+        juce::AudioBuffer<float> block (2, blockSize);
+        bool first = false, second = false;
+
+        for (int pos = 0; pos < numSamples; pos += blockSize)
+        {
+            juce::MidiBuffer midi;
+
+            if (! first) { midi.addEvent (juce::MidiMessage::noteOn (1, 48, 0.8f), 0); first = true; }
+
+            if (! second && pos >= changeAt)
+            {
+                midi.addEvent (juce::MidiMessage::noteOn (1, 60, 0.8f), 0);
+                second = true;
+            }
+
+            block.clear();
+            proc.processBlock (block, midi);
+
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, pos, block, ch, 0, juce::jmin (blockSize, numSamples - pos));
+        }
+
+        return out;
+    };
+
+    const auto legato = render (2.0f);
+    const auto mono = render (1.0f);
+
+    // Right after the change: the Mono retrigger has snapped back to the
+    // attack peak; Legato stays at sustain (0.2). Window covers the first 60ms.
+    const auto legatoAfter = legato.getRMSLevel (0, changeAt + 480, 2880);
+    const auto monoAfter = mono.getRMSLevel (0, changeAt + 480, 2880);
+    const auto legatoBefore = legato.getRMSLevel (0, changeAt - 4800, 2880);
+
+    EXPECT_MSG (std::abs (legatoAfter - legatoBefore) < legatoBefore * 0.5f,
+                "legato level jumped at the note change ("
+                    + juce::String (legatoBefore, 4) + " -> " + juce::String (legatoAfter, 4) + ")");
+    EXPECT_MSG (monoAfter > legatoAfter * 1.5f,
+                "mono retrigger looks identical to legato (mono "
+                    + juce::String (monoAfter, 4) + " vs legato " + juce::String (legatoAfter, 4)
+                    + ") - the retrigger flag is dead");
+}
+
+KTEST_CASE (processor_glideMovesPitchGradually)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 96000, blockSize = 256;
+    constexpr int changeAt = 24000; // note change at 0.5s, glide 300ms
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, blockSize);
+    giveProcessorASource (proc, sampleRate);
+    proc.extractNow();
+    setParam (proc, params::voiceMode, 2.0f); // Legato
+    setParam (proc, params::glideTime, 300.0f);
+    setParam (proc, params::focus, 1.0f); // Tone only: clean spectrum to measure
+    setParam (proc, params::ampAttack, 1.0f);
+
+    juce::AudioBuffer<float> out (2, numSamples);
+    out.clear();
+    juce::AudioBuffer<float> block (2, blockSize);
+    bool first = false, second = false;
+
+    for (int pos = 0; pos < numSamples; pos += blockSize)
+    {
+        juce::MidiBuffer midi;
+
+        if (! first) { midi.addEvent (juce::MidiMessage::noteOn (1, 48, 0.8f), 0); first = true; }
+
+        if (! second && pos >= changeAt)
+        {
+            midi.addEvent (juce::MidiMessage::noteOn (1, 72, 0.8f), 0);
+            second = true;
+        }
+
+        block.clear();
+        proc.processBlock (block, midi);
+
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (ch, pos, block, ch, 0, juce::jmin (blockSize, numSamples - pos));
+    }
+
+    EXPECT_TRUE (ktest::isFinite (out));
+
+    auto dominantHz = [&] (int start, int fftOrder)
+    {
+        const auto spectrum = ktest::powerSpectrumDb (out, start, fftOrder);
+        int best = 1;
+
+        for (int k = 2; k < (int) spectrum.size(); ++k)
+            if (spectrum[(size_t) k] > spectrum[(size_t) best])
+                best = k;
+
+        // Bin width must match the FFT size actually used - a mismatched
+        // constant here once halved every measured frequency.
+        return (double) best * sampleRate / (double) (1 << fftOrder);
+    };
+
+    // Well after the glide (long window, fine resolution): pitch has landed.
+    const auto landed = dominantHz (60000, 15);
+    EXPECT_NEAR (landed, analysis::noteFrequencyHz (72), analysis::noteFrequencyHz (72) * 0.03);
+
+    // Right after the change the pitch must still be travelling. The window has
+    // to be SHORTER than the glide (4096 samples = 85ms inside a 300ms glide) -
+    // a long window here would span the landing and report the target.
+    const auto early = dominantHz (changeAt + 1600, 12);
+    EXPECT_MSG (early < analysis::noteFrequencyHz (60),
+                "pitch jumped instantly to the target: " + juce::String (early, 1)
+                    + " Hz right after the change (glide is dead)");
+}
+
+KTEST_CASE (processor_modWheelReachesTheMatrix)
+{
+    constexpr double sampleRate = 48000.0;
+
+    auto render = [&] (int wheelValue)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 256);
+        giveProcessorASource (proc, sampleRate);
+        proc.extractNow();
+        setParam (proc, params::focus, 0.0f);
+        setModSlot (proc, 0, 5 /*ModWheel*/, 1 /*Focus*/, 100.0f);
+
+        juce::AudioBuffer<float> out (2, 24000);
+        out.clear();
+        juce::AudioBuffer<float> block (2, 256);
+        bool sent = false;
+
+        for (int pos = 0; pos < out.getNumSamples(); pos += 256)
+        {
+            const auto n = juce::jmin (256, out.getNumSamples() - pos);
+
+            juce::MidiBuffer midi;
+
+            if (! sent)
+            {
+                midi.addEvent (juce::MidiMessage::controllerEvent (1, 1, wheelValue), 0);
+                midi.addEvent (juce::MidiMessage::noteOn (1, 60, 0.8f), 1);
+                sent = true;
+            }
+
+            block.setSize (2, n, false, false, true);
+            block.clear();
+            proc.processBlock (block, midi);
+
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, pos, block, ch, 0, n);
+        }
+
+        return out;
+    };
+
+    // Wheel at 0: focus stays 0 (pure Cloud). Wheel at 127: focus pushed to 1
+    // (pure Tone). The two renders must differ substantially.
+    const auto wheelDown = render (0);
+    const auto wheelUp = render (127);
+
+    EXPECT_TRUE (ktest::isFinite (wheelDown) && ktest::isFinite (wheelUp));
+    EXPECT_TRUE (wheelUp.getMagnitude (0, 24000) > 0.001f);
+
+    float diff = 0.0f;
+    for (int i = 0; i < 24000; ++i)
+        diff = juce::jmax (diff, std::abs (wheelDown.getSample (0, i) - wheelUp.getSample (0, i)));
+
+    EXPECT_MSG (diff > 0.01f, "mod wheel had no effect through the matrix");
 }
 

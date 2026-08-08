@@ -151,16 +151,76 @@ namespace keepsake
         void renderAudition (juce::AudioBuffer<float>& buffer);
         void publishSource (SourceAudio::Ptr source, const juce::String& sourceName);
 
+        /**
+            Poly by default; Mono/Legato override noteOn/noteOff with a fixed-
+            capacity held-note stack. A Synthesiser subclass (not a MIDI filter in
+            front of it) because legato means "change the sounding voice's pitch
+            without retriggering its envelope" - something no MIDI event can
+            express, so voice access is needed either way and the stack belongs
+            next to the allocation logic it modifies. Called from handleMidiEvent
+            at sample-accurate split positions; both overrides take the base
+            class's own lock, matching its concurrency contract.
+        */
+        class KeepsakeSynth : public juce::Synthesiser
+        {
+        public:
+            KeepsakeSynth (const params::Handles& h, BlockContext& c)
+                : handles (h), context (c) {}
+
+            void noteOn (int midiChannel, int midiNoteNumber, float velocity) override;
+            void noteOff (int midiChannel, int midiNoteNumber, float velocity,
+                          bool allowTailOff) override;
+
+            // Wheel/pressure captured here (not per voice): the base class only
+            // dispatches these to voices that are already sounding, so a value
+            // set before a note would otherwise be lost. Channel pressure and
+            // poly aftertouch write the same field; last writer wins.
+            void handleController (int midiChannel, int controllerNumber, int value) override
+            {
+                if (controllerNumber == 1)
+                    context.modWheel01.store ((float) value / 127.0f, std::memory_order_relaxed);
+
+                juce::Synthesiser::handleController (midiChannel, controllerNumber, value);
+            }
+
+            void handleChannelPressure (int midiChannel, int value) override
+            {
+                context.aftertouch01.store ((float) value / 127.0f, std::memory_order_relaxed);
+                juce::Synthesiser::handleChannelPressure (midiChannel, value);
+            }
+
+            void handleAftertouch (int midiChannel, int note, int value) override
+            {
+                context.aftertouch01.store ((float) value / 127.0f, std::memory_order_relaxed);
+                juce::Synthesiser::handleAftertouch (midiChannel, note, value);
+            }
+
+        private:
+            KeepsakeVoice* monoVoice() noexcept
+            {
+                return dynamic_cast<KeepsakeVoice*> (getVoice (0));
+            }
+
+            const params::Handles& handles;
+            BlockContext& context;
+
+            struct HeldNote { int note = 0; float velocity = 0.0f; };
+            std::array<HeldNote, 32> held {}; // fixed capacity: no allocation
+            int heldCount = 0;
+        };
+
         juce::AudioProcessorValueTreeState apvts;
         params::Handles handles;
 
         CaptureIO captureIO;
         SourceStore sourceStore;
         WavetableStore wavetableStore;
+        BlockContext blockContext; // per-block host tempo etc., read by voices
         std::atomic<juce::uint64> sourceGeneration { 0 };
         std::vector<const WavetableSet*> pinnedScratch; // message-thread GC scratch
 
-        juce::Synthesiser synth;
+        KeepsakeSynth synth { handles, blockContext };
+        int lastVoiceMode = 0; // mode change -> allNotesOff with the steal fade
         juce::LinearSmoothedValue<float> outputGain;
 
         // Audition state, all touched from both threads via atomics only.

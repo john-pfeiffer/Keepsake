@@ -48,9 +48,16 @@ namespace keepsake
             KnobPanel cloudPanel { "CLOUD  -  granular" };
             KnobPanel tonePanel { "TONE  -  wavetable" };
             KnobPanel rootPanel { "KEEPSAKE" };
-            KnobPanel ampPanel { "AMP ENVELOPE" };
-            KnobPanel outputPanel { "OUTPUT" };
-            juce::Label placeholder;
+
+            // M4 controls live in tabs (the spec's "mod matrix behind a
+            // drawer/tab"); stock TabbedComponent, stock knobs, no styling.
+            juce::TabbedComponent tabs { juce::TabbedButtonBar::TabsAtTop };
+            KnobPanel ampPanel { "AMP + OUTPUT" };
+            KnobPanel filterPanel { "FILTER" };
+            KnobPanel env2Panel { "ENV2" };
+            KnobPanel lfoPanel { "LFO 1 / LFO 2" };
+            KnobPanel voicePanel { "VOICE" };
+            KnobPanel modPanel { "MOD MATRIX" };
         };
 
         KeepsakeProcessor& proc;

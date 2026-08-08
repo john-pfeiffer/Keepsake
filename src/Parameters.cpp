@@ -130,6 +130,85 @@ namespace keepsake::params
             juce::StringArray { "Loop", "Ping-Pong" },
             0));
 
+        // --- Filter ---------------------------------------------------------
+        // NOTE (frozen ABI): every AudioParameterChoice list in this plugin is
+        // final once shipped - host automation stores index/(numChoices-1), so
+        // changing a list's length silently remaps recorded automation.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { filterType, 1 },
+            "Filter Type",
+            juce::StringArray { "Low-pass", "Band-pass", "High-pass" },
+            0));
+        layout.add (makeFloat (filterCutoff, "Cutoff",
+                               skewed (20.0f, 20000.0f, 640.0f), 20000.0f, " Hz", 0));
+        layout.add (makeFloat (filterResonance, "Resonance",
+                               skewed (0.5f, 10.0f, 1.5f), 0.707f, "", 2));
+        layout.add (makeFloat (filterKeytrack, "Keytrack", Range (0.0f, 100.0f), 0.0f, " %", 0));
+
+        // --- ENV2 -----------------------------------------------------------
+        layout.add (makeFloat (env2Attack, "Env2 Attack",
+                               skewed (1.0f, 5000.0f, 100.0f), 20.0f, " ms", 1));
+        layout.add (makeFloat (env2Decay, "Env2 Decay",
+                               skewed (1.0f, 5000.0f, 300.0f), 400.0f, " ms", 1));
+        layout.add (makeFloat (env2Sustain, "Env2 Sustain", Range (0.0f, 1.0f), 0.8f, "", 2));
+        layout.add (makeFloat (env2Release, "Env2 Release",
+                               skewed (1.0f, 10000.0f, 500.0f), 600.0f, " ms", 1));
+
+        // --- LFOs (all lists frozen ABI) ------------------------------------
+        const juce::StringArray lfoShapes { "Sine", "Triangle", "Saw", "S&H" };
+        const juce::StringArray lfoDivisions { "1/1", "1/2", "1/2T", "1/4.", "1/4", "1/4T",
+                                               "1/8.", "1/8", "1/8T", "1/16", "1/16T", "1/32" };
+
+        auto addLfo = [&] (const char* shapeId, const char* rateId, const char* syncId,
+                           const char* divId, const char* retrigId, const char* prefix)
+        {
+            const juce::String name (prefix);
+            layout.add (std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { shapeId, 1 }, name + " Shape", lfoShapes, 0));
+            layout.add (makeFloat (rateId, name + " Rate",
+                                   skewed (0.02f, 20.0f, 2.0f), 1.0f, " Hz", 2));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { syncId, 1 }, name + " Sync",
+                juce::StringArray { "Free", "Sync" }, 0));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { divId, 1 }, name + " Division", lfoDivisions, 4));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { retrigId, 1 }, name + " Retrig",
+                juce::StringArray { "Off", "On" }, 1));
+        };
+
+        addLfo (lfo1Shape, lfo1Rate, lfo1Sync, lfo1Division, lfo1Retrig, "LFO1");
+        addLfo (lfo2Shape, lfo2Rate, lfo2Sync, lfo2Division, lfo2Retrig, "LFO2");
+
+        // --- Mod matrix (6 slots; both choice lists frozen ABI) --------------
+        const juce::StringArray modSources { "None", "Env2", "LFO1", "LFO2",
+                                             "Velocity", "Mod Wheel", "Aftertouch" };
+        const juce::StringArray modDests { "None", "Focus", "Place", "Cutoff",
+                                           "Grain Size", "Density", "Drift", "Shimmer",
+                                           "Frame", "Pitch", "Spread", "Reverb Mix" };
+
+        for (int slot = 0; slot < 6; ++slot)
+        {
+            const auto n = juce::String (slot + 1);
+            layout.add (std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { slotId ("Source", slot), 1 },
+                "Mod " + n + " Source", modSources, 0));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { slotId ("Dest", slot), 1 },
+                "Mod " + n + " Dest", modDests, 0));
+            layout.add (makeFloat (slotId ("Depth", slot), "Mod " + n + " Amount",
+                                   Range (-100.0f, 100.0f), 0.0f, " %", 0));
+        }
+
+        // --- Voice architecture ---------------------------------------------
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { voiceMode, 1 },
+            "Voice Mode",
+            juce::StringArray { "Poly", "Mono", "Legato" },
+            0));
+        layout.add (makeFloat (glideTime, "Glide",
+                               skewed (0.0f, 2000.0f, 100.0f), 50.0f, " ms", 0));
+
         // --- Amp envelope ---------------------------------------------------
         layout.add (makeFloat (ampAttack, "Attack",
                                skewed (1.0f, 5000.0f, 100.0f), 20.0f, " ms", 1));
@@ -162,6 +241,59 @@ namespace keepsake::params
         toneFrame     = state.getRawParameterValue (params::toneFrame);
         toneFrames    = state.getRawParameterValue (params::toneFrames);
         toneFrameWrap = state.getRawParameterValue (params::toneFrameWrap);
+        filterType      = state.getRawParameterValue (params::filterType);
+        filterCutoff    = state.getRawParameterValue (params::filterCutoff);
+        filterResonance = state.getRawParameterValue (params::filterResonance);
+        filterKeytrack  = state.getRawParameterValue (params::filterKeytrack);
+        env2Attack  = state.getRawParameterValue (params::env2Attack);
+        env2Decay   = state.getRawParameterValue (params::env2Decay);
+        env2Sustain = state.getRawParameterValue (params::env2Sustain);
+        env2Release = state.getRawParameterValue (params::env2Release);
+
+        const char* lfoIds[2][5] = {
+            { params::lfo1Shape, params::lfo1Rate, params::lfo1Sync, params::lfo1Division, params::lfo1Retrig },
+            { params::lfo2Shape, params::lfo2Rate, params::lfo2Sync, params::lfo2Division, params::lfo2Retrig },
+        };
+
+        for (int i = 0; i < 2; ++i)
+        {
+            lfoShape[i]    = state.getRawParameterValue (lfoIds[i][0]);
+            lfoRate[i]     = state.getRawParameterValue (lfoIds[i][1]);
+            lfoSync[i]     = state.getRawParameterValue (lfoIds[i][2]);
+            lfoDivision[i] = state.getRawParameterValue (lfoIds[i][3]);
+            lfoRetrig[i]   = state.getRawParameterValue (lfoIds[i][4]);
+        }
+
+        voiceMode = state.getRawParameterValue (params::voiceMode);
+        glideTime = state.getRawParameterValue (params::glideTime);
+
+        for (int slot = 0; slot < 6; ++slot)
+        {
+            modSource[slot] = state.getRawParameterValue (params::slotId ("Source", slot));
+            modDest[slot]   = state.getRawParameterValue (params::slotId ("Dest", slot));
+            modDepth[slot]  = state.getRawParameterValue (params::slotId ("Depth", slot));
+        }
+
+        // Destination ranges for the normalized-domain combine. Indices follow
+        // mod::Dest; None/Pitch/ReverbMix have no underlying parameter.
+        auto rangeOf = [&state] (const char* id) -> const juce::NormalisableRange<float>*
+        {
+            if (auto* p = state.getParameter (id))
+                return &p->getNormalisableRange();
+
+            jassertfalse;
+            return nullptr;
+        };
+
+        destRange[1]  = rangeOf (params::focus);
+        destRange[2]  = rangeOf (params::place);
+        destRange[3]  = rangeOf (params::filterCutoff);
+        destRange[4]  = rangeOf (params::grainSize);
+        destRange[5]  = rangeOf (params::grainDensity);
+        destRange[6]  = rangeOf (params::grainDrift);
+        destRange[7]  = rangeOf (params::grainShimmer);
+        destRange[8]  = rangeOf (params::toneFrame);
+        destRange[10] = rangeOf (params::grainSpread);
         ampAttack     = state.getRawParameterValue (params::ampAttack);
         ampDecay      = state.getRawParameterValue (params::ampDecay);
         ampSustain    = state.getRawParameterValue (params::ampSustain);
