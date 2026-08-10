@@ -291,20 +291,41 @@ namespace keepsake
         addAndMakeVisible (content);
         content.setSize (kDesignWidth, kDesignHeight);
 
-        // Resizable from v1, fixed aspect ratio (spec §3 / §8).
+        // Resizable from v1 (spec §3 / §8). Deliberately NO fixed-aspect
+        // constrainer: a constrainer that "snaps back" a size the host just
+        // imposed is a known trigger for Logic/GarageBand's macOS Tahoe
+        // out-of-process AU bug, where the container drops mouse events in
+        // whole regions of the view (KPT-1/KPT-3). We accept ANY size and
+        // letterbox the content instead - the design stays proportional, and
+        // nothing ever disagrees with the host about geometry.
         setResizable (true, true);
 
         if (auto* bounds = getConstrainer())
-        {
-            bounds->setFixedAspectRatio ((double) kDesignWidth / (double) kDesignHeight);
             bounds->setSizeLimits (kDesignWidth * 2 / 3, kDesignHeight * 2 / 3,
-                                        kDesignWidth * 2, kDesignHeight * 2);
-        }
+                                   kDesignWidth * 2, kDesignHeight * 2);
 
         setSize (kDesignWidth, kDesignHeight);
+
+        // The same Logic container bug can leave its clickable region stale
+        // for the size the editor opened at; a 1px resize shortly after
+        // attach forces it to recompute (established JUCE-forum workaround).
+        // Harmless everywhere else.
+        startTimer (50);
     }
 
     KeepsakeEditor::~KeepsakeEditor() = default;
+
+    void KeepsakeEditor::timerCallback()
+    {
+        stopTimer();
+
+        // Downward, so the constrainer's maximum can never clamp this into a
+        // no-op; the minimum is well below the default size.
+        const auto w = getWidth();
+        const auto h = getHeight();
+        setSize (w - 1, h);
+        setSize (w, h);
+    }
 
     void KeepsakeEditor::paint (juce::Graphics& g)
     {
@@ -319,10 +340,17 @@ namespace keepsake
 
     void KeepsakeEditor::resized()
     {
-        // One transform scales the whole design-size layout to the current window.
-        const auto scale = (float) getWidth() / (float) kDesignWidth;
+        // One transform scales the whole design-size layout to the current
+        // window, letterboxed: whatever aspect ratio the host imposes, the
+        // content keeps its proportions and centers, and the editor never
+        // pushes a "corrected" size back at the host (see the constructor).
+        const auto scale = juce::jmin ((float) getWidth() / (float) kDesignWidth,
+                                       (float) getHeight() / (float) kDesignHeight);
+        const auto offsetX = ((float) getWidth() - kDesignWidth * scale) * 0.5f;
+        const auto offsetY = ((float) getHeight() - kDesignHeight * scale) * 0.5f;
 
-        content.setTransform (juce::AffineTransform::scale (scale));
+        content.setTransform (juce::AffineTransform::scale (scale)
+                                  .translated (offsetX, offsetY));
         content.setBounds (0, 0, kDesignWidth, kDesignHeight);
     }
 
