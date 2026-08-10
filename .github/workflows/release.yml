@@ -1,0 +1,232 @@
+name: Release
+
+# Versioned releases from CI (spec §7). Fires on v* tags; workflow_dispatch is
+# a dry run that builds both installers as workflow artifacts without creating
+# a release - use it to test packaging before tagging.
+#
+# A release passes the exact same gate as every push (tests + pluginval at
+# strictness 8) - packaging is a suffix, never a shortcut.
+#
+# macOS signing/notarization is driven by repository secrets and degrades
+# gracefully: with no MACOS_CERT_P12 secret the pkg is built unsigned
+# (right-click-open for testing). Add the five secrets and the next tag is
+# signed + notarized with no workflow changes:
+#   MACOS_CERT_P12 (base64 .p12 with both Developer ID certs)
+#   MACOS_CERT_PASSWORD
+#   NOTARY_APPLE_ID / NOTARY_TEAM_ID / NOTARY_PASSWORD (app-specific password)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+  PLUGINVAL_STRICTNESS: 8
+
+jobs:
+  macos:
+    name: macOS installer
+    runs-on: macos-14
+    env:
+      HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v4
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-juce-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Derive version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="0.0.0-dry.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "KEEPSAKE_VERSION=$V" >> "$GITHUB_ENV"
+          echo "Version: $V"
+
+      # A plain release tag must match the compiled-in plugin version; rc/dry
+      # builds are exempt (the numeric plugin version cannot carry a suffix).
+      - name: Check tag matches project version
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+        shell: bash
+        run: |
+          grep -q "project(Keepsake VERSION ${KEEPSAKE_VERSION} " CMakeLists.txt \
+            || { echo "Tag v${KEEPSAKE_VERSION} does not match CMakeLists.txt project VERSION"; exit 1; }
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Unit and offline render tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Fetch pluginval
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/v1.0.3/pluginval_macOS.zip
+          unzip -o -q pluginval.zip -d pluginval-bin
+
+      - name: pluginval (VST3)
+        run: |
+          PV="pluginval-bin/pluginval.app/Contents/MacOS/pluginval"
+          VST3=$(find build -name '*.vst3' | head -1)
+          "$PV" --strictness-level ${{ env.PLUGINVAL_STRICTNESS }} --validate-in-process \
+                --timeout-ms 300000 --validate "$VST3"
+
+      - name: pluginval (AU)
+        run: |
+          PV="pluginval-bin/pluginval.app/Contents/MacOS/pluginval"
+          AU=$(find build -name '*.component' | head -1)
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "$AU" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          "$PV" --strictness-level ${{ env.PLUGINVAL_STRICTNESS }} --validate-in-process \
+                --timeout-ms 300000 --validate "$AU"
+
+      - name: Import signing certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          echo "$MACOS_CERT_P12" | base64 -d > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productsign -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+          rm cert.p12
+
+          APP_ID=$(security find-identity -v -p codesigning build.keychain | awk -F'"' '/Developer ID Application/{print $2; exit}')
+          INST_ID=$(security find-identity -v build.keychain | awk -F'"' '/Developer ID Installer/{print $2; exit}')
+          [ -n "$APP_ID" ] || { echo "No Developer ID Application identity in the p12"; exit 1; }
+          [ -n "$INST_ID" ] || { echo "No Developer ID Installer identity in the p12"; exit 1; }
+          echo "MACOS_SIGN_IDENTITY_APP=$APP_ID" >> "$GITHUB_ENV"
+          echo "MACOS_SIGN_IDENTITY_INSTALLER=$INST_ID" >> "$GITHUB_ENV"
+
+      - name: Build installer pkg
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          chmod +x packaging/macos/build-pkg.sh
+          packaging/macos/build-pkg.sh "$KEEPSAKE_VERSION" \
+            "build/Keepsake_artefacts/${{ env.BUILD_TYPE }}" dist
+
+      - name: Delete signing keychain
+        if: always() && env.HAS_SIGNING == 'true'
+        run: security delete-keychain build.keychain || true
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Keepsake-macOS-installer
+          path: dist/*.pkg
+          if-no-files-found: error
+
+  windows:
+    name: Windows installer
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-juce-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Derive version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="0.0.0-dry.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "KEEPSAKE_VERSION=$V" >> "$GITHUB_ENV"
+          echo "Version: $V"
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Unit and offline render tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Fetch pluginval
+        shell: bash
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/v1.0.3/pluginval_Windows.zip
+          unzip -o -q pluginval.zip -d pluginval-bin
+
+      - name: pluginval (VST3)
+        shell: bash
+        run: |
+          VST3=$(find build -name '*.vst3' | head -1)
+          pluginval-bin/pluginval.exe --strictness-level ${{ env.PLUGINVAL_STRICTNESS }} \
+            --validate-in-process --timeout-ms 300000 --validate "$VST3"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          iscc /DVersion=$env:KEEPSAKE_VERSION `
+               /DArtefactsDir=$PWD\build\Keepsake_artefacts\$env:BUILD_TYPE `
+               /Odist packaging\windows\keepsake.iss
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Keepsake-Windows-installer
+          path: dist/*.exe
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.pkg
+            dist/*.exe
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          body: |
+            Install instructions: see the README's "Installing" section.
+            macOS builds are notarized only when signing credentials were
+            configured for this run - an unsigned rc needs right-click > Open.

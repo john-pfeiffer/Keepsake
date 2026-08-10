@@ -11,9 +11,9 @@ instant across the keyboard.
 
 ## Status
 
-Milestones **M0–M5** of the Keepsake concept & build specification (v0.1 draft, held
-outside this repo) are implemented. Section references in code comments — "spec §2.2"
-and so on — point at that document.
+All milestones **M0–M6** of the Keepsake concept & build specification (v0.1 draft,
+held outside this repo) are implemented. Section references in code comments —
+"spec §2.2" and so on — point at that document.
 
 | Milestone | Scope | State |
 |---|---|---|
@@ -23,7 +23,7 @@ and so on — point at that document.
 | **M3** Tone | Root + cycle extraction, mipmapped wavetable, Frame, Place re-extraction | Done |
 | **M4** Focus + Mod | Focus coupling, filter, ENV2, LFOs, mod matrix, mono/legato | Done |
 | **M5** FX + Presets + Randomize | Warmth/Chorus/Air, preset browser, Randomize | Done |
-| **M6** Package | Notarized macOS pkg, Inno Setup installer, GitHub Releases | Not started |
+| **M6** Package | macOS pkg (notarized when certs configured), Inno Setup installer, GitHub Releases | Done |
 
 Focus carries the full §2.4 coupling: toward Tone the cloud condenses (density
 up, grains shorter, shimmer down); toward Cloud, Tone ducks early and detunes
@@ -86,6 +86,27 @@ into a real DAW yet — CI proves it builds and passes pluginval on all three pl
 which is not the same thing.
 
 ---
+
+## Installing
+
+Grab the installer for your platform from the repository's **Releases** page
+(built and validated by CI from the tagged commit):
+
+- **macOS** — `Keepsake-<version>-macOS.pkg` installs the VST3, AU and the
+  standalone app to their system locations. Release-candidate builds may be
+  unsigned: if Gatekeeper objects, right-click the pkg and choose *Open*.
+  Signed releases are notarized and open normally.
+- **Windows** — `Keepsake-<version>-Windows-Setup.exe` installs the VST3 to
+  `C:\Program Files\Common Files\VST3` and the standalone to Program Files.
+  The installer is unsigned in v1; click through SmartScreen via
+  *More info → Run anyway*. The uninstaller removes both.
+
+Presets are saved to `Documents/Keepsake/Presets` — they are not touched by
+install or uninstall, and each preset embeds its own capture audio.
+
+To uninstall on macOS, delete `Keepsake.vst3` from
+`/Library/Audio/Plug-Ins/VST3`, `Keepsake.component` from
+`/Library/Audio/Plug-Ins/Components`, and `Keepsake.app` from Applications.
 
 ## Building
 
@@ -266,19 +287,23 @@ A few decisions worth knowing before editing:
 
 ---
 
-## Plugin identity — needs a decision before release
+## Plugin identity — frozen at 1.0.0
 
-`CMakeLists.txt` currently carries **placeholders**:
-
-| Field | Placeholder |
+| Field | Value |
 |---|---|
-| `COMPANY_NAME` | `EVS` |
-| `BUNDLE_ID` | `com.evs.keepsake` |
+| `COMPANY_NAME` | `Elan Vital Studios` |
+| `BUNDLE_ID` | `com.elanvitalstudios.keepsake` |
 | `PLUGIN_MANUFACTURER_CODE` | `Evsy` |
 | `PLUGIN_CODE` | `Kpsk` |
 
-The spec lists plugin identity metadata (manufacturer name/codes, bundle ID — shared with
-Folie) as a pre-M0 administrative item held outside the spec, along with the JUCE licence
-tier check against repo visibility. These need real values before anything ships: the AU
-manufacturer/plugin code pair must be stable, because changing it after release breaks
-every saved project that references the plugin.
+These are load-bearing: the AU manufacturer/plugin code pair and the bundle ID are
+what saved DAW projects reference, so they must never change after release. (DAW
+sessions saved against pre-1.0 dev builds — bundle id `com.evs.keepsake` — will
+re-scan the plugin as new; that is the one-time cost of finalizing, paid before
+anything shipped.)
+
+Still open before public distribution, both outside this repo: the JUCE licence
+tier decision (AGPL vs commercial, against repo visibility), and the spec's manual
+DAW matrix — Ableton, Logic, Reaper, FL Studio at 44.1/48/96 kHz — which gates the
+plain `v1.0.0` tag. Release candidates (`v1.0.0-rc.N`) can ship installers before
+that.

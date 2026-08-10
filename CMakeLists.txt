@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(Keepsake VERSION 0.1.0 LANGUAGES C CXX)
+project(Keepsake VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,11 +48,12 @@ else ()
 endif ()
 
 # --- Plugin -----------------------------------------------------------------
-# NOTE: the manufacturer/plugin codes and bundle id below are placeholders.
-# See README "Plugin identity" before the first public release.
+# Identity is FROZEN as of 1.0.0: the AU manufacturer/plugin code pair and the
+# bundle id are what saved DAW projects reference - changing any of them after
+# release orphans every project that uses the plugin.
 juce_add_plugin(Keepsake
-        COMPANY_NAME "EVS"
-        BUNDLE_ID "com.evs.keepsake"
+        COMPANY_NAME "Elan Vital Studios"
+        BUNDLE_ID "com.elanvitalstudios.keepsake"
         PLUGIN_MANUFACTURER_CODE Evsy
         PLUGIN_CODE Kpsk
         FORMATS VST3 AU Standalone
