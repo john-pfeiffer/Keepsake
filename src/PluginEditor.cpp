@@ -114,8 +114,18 @@ namespace keepsake
             return std::make_unique<ParamKnob> (state, id, name, tip);
         };
 
+        auto choice = [&state] (const char* id, const char* name, const char* tip)
+        {
+            return std::make_unique<ParamChoice> (state, id, name, tip);
+        };
+
+        auto toggle = [&state] (const char* id, const char* name, const char* tip)
+        {
+            return std::make_unique<ParamToggle> (state, id, name, tip);
+        };
+
         // --- Keepsake (capture) ---------------------------------------------
-        rootPanel.setColumns (3);
+        rootPanel.setColumns (4); // one row: Place / Keep / Root / Fine
         rootPanel.addKnob (knob (params::place, "Place",
                                  "Place - capture position through the source file. Automatable; "
                                  "small mod depths give subtle movement, large sweeps scan the whole file."));
@@ -129,7 +139,7 @@ namespace keepsake
         addAndMakeVisible (rootPanel);
 
         // --- Cloud ----------------------------------------------------------
-        cloudPanel.setColumns (3);
+        cloudPanel.setColumns (6); // one full-width row
         cloudPanel.addKnob (knob (params::grainSize, "Size",
                                   "Grain Size - 5-250 ms, clamped to the kept window."));
         cloudPanel.addKnob (knob (params::grainDensity, "Density",
@@ -154,12 +164,12 @@ namespace keepsake
         tonePanel.addKnob (knob (params::toneFrame, "Frame",
                                  "Frame - scans across the wavetable frames extracted from "
                                  "the kept moment."));
-        tonePanel.addKnob (knob (params::toneFrames, "Frames",
-                                 "Frames - how many cycles are extracted across the kept "
-                                 "window: 2/4/8/16. Changing it re-extracts."));
-        tonePanel.addKnob (knob (params::toneFrameWrap, "Wrap",
-                                 "Frame Wrap - Loop or Ping-Pong when Frame is scanned or "
-                                 "modulated."));
+        tonePanel.addKnob (choice (params::toneFrames, "Frames",
+                                   "Frames - how many cycles are extracted across the kept "
+                                   "window: 2/4/8/16. Changing it re-extracts."));
+        tonePanel.addKnob (choice (params::toneFrameWrap, "Wrap",
+                                   "Frame Wrap - Loop or Ping-Pong when Frame is scanned or "
+                                   "modulated."));
         addAndMakeVisible (tonePanel);
 
         // --- Amp env + output ------------------------------------------------
@@ -173,7 +183,7 @@ namespace keepsake
 
         // --- Filter ----------------------------------------------------------
         filterPanel.setColumns (4);
-        filterPanel.addKnob (knob (params::filterType, "Type", "Filter type: LP / BP / HP."));
+        filterPanel.addKnob (choice (params::filterType, "Type", "Filter type: LP / BP / HP."));
         filterPanel.addKnob (knob (params::filterCutoff, "Cutoff",
                                    "Filter cutoff. Keytrack and modulation apply on top."));
         filterPanel.addKnob (knob (params::filterResonance, "Res", "Filter resonance (Q)."));
@@ -188,8 +198,8 @@ namespace keepsake
         env2Panel.addKnob (knob (params::env2Release, "R", "ENV2 Release."));
 
         voicePanel.setColumns (2);
-        voicePanel.addKnob (knob (params::voiceMode, "Mode",
-                                  "Voice mode: Poly, Mono (retriggers), Legato (doesn't)."));
+        voicePanel.addKnob (choice (params::voiceMode, "Mode",
+                                    "Voice mode: Poly, Mono (retriggers), Legato (doesn't)."));
         voicePanel.addKnob (knob (params::glideTime, "Glide",
                                   "Glide time between notes in Mono/Legato, constant-time."));
 
@@ -203,24 +213,26 @@ namespace keepsake
                                                        params::lfo2Sync, params::lfo2Division,
                                                        params::lfo2Retrig } })
         {
-            lfoPanel.addKnob (knob (ids[0], "Shape", "LFO shape: Sine / Triangle / Saw / S&H."));
+            lfoPanel.addKnob (choice (ids[0], "Shape", "LFO shape: Sine / Triangle / Saw / S&H."));
             lfoPanel.addKnob (knob (ids[1], "Rate", "LFO rate in Hz (Free mode)."));
-            lfoPanel.addKnob (knob (ids[2], "Sync", "Free-running Hz or tempo-synced."));
-            lfoPanel.addKnob (knob (ids[3], "Div", "Tempo division when synced."));
-            lfoPanel.addKnob (knob (ids[4], "Retrig",
-                                    "On: phase restarts at every note. Off: free-running."));
+            lfoPanel.addKnob (toggle (ids[2], "Sync", "On: tempo-synced. Off: free-running Hz."));
+            lfoPanel.addKnob (choice (ids[3], "Div", "Tempo division when synced."));
+            lfoPanel.addKnob (toggle (ids[4], "Retrig",
+                                      "On: phase restarts at every note. Off: free-running."));
         }
 
         // --- Mod matrix ------------------------------------------------------
-        modPanel.setColumns (6);
+        // Full-width tab strip: 9 columns = three complete slots per row, so
+        // the Source/Dest dropdowns are wide enough to read.
+        modPanel.setColumns (9);
 
         for (int slot = 0; slot < 6; ++slot)
         {
             const auto n = juce::String (slot + 1);
-            modPanel.addKnob (std::make_unique<ParamKnob> (state, params::slotId ("Source", slot),
-                                                           "Src " + n, "Mod slot " + n + " source."));
-            modPanel.addKnob (std::make_unique<ParamKnob> (state, params::slotId ("Dest", slot),
-                                                           "Dst " + n, "Mod slot " + n + " destination."));
+            modPanel.addKnob (std::make_unique<ParamChoice> (state, params::slotId ("Source", slot),
+                                                             "Src " + n, "Mod slot " + n + " source."));
+            modPanel.addKnob (std::make_unique<ParamChoice> (state, params::slotId ("Dest", slot),
+                                                             "Dst " + n, "Mod slot " + n + " destination."));
             modPanel.addKnob (std::make_unique<ParamKnob> (state, params::slotId ("Depth", slot),
                                                            "Amt " + n, "Mod slot " + n + " depth."));
         }
@@ -259,25 +271,29 @@ namespace keepsake
 
         presetBar.setBounds (r.removeFromTop (30).reduced (8, 3));
 
-        // Top half: the waveform is the hero (spec §3).
-        waveform.setBounds (r.removeFromTop (r.getHeight() / 2).reduced (8, 8));
-        capture.setBounds (r.removeFromTop (32).reduced (8, 0));
+        // The waveform stays the hero (spec §3) but as a FIXED band, not half
+        // the window - the rc.1 half-split was what starved every control
+        // below it into an unusable sliver.
+        waveform.setBounds (r.removeFromTop (196).reduced (8, 6));
+        capture.setBounds (r.removeFromTop (28).reduced (8, 0));
 
-        r.reduce (8, 8);
+        r.reduce (8, 6);
 
-        // Bottom half, left: capture + Cloud. Right: envelope, output, and the space
-        // that Focus/Tone will occupy from M3.
-        auto left = r.removeFromLeft ((int) (r.getWidth() * 0.55));
-        r.removeFromLeft (8);
+        // Two full-width single-row bands: capture + Tone side by side, then
+        // Cloud across the whole width. Single rows keep every rotary tall.
+        {
+            auto band = r.removeFromTop (124);
+            rootPanel.setBounds (band.removeFromLeft ((int) (band.getWidth() * 0.5)));
+            band.removeFromLeft (8);
+            tonePanel.setBounds (band);
+        }
 
-        rootPanel.setBounds (left.removeFromTop (left.getHeight() / 2).reduced (0, 0));
-        left.removeFromTop (8);
-        cloudPanel.setBounds (left);
-
-        // Right column: Tone on top (Focus lives with it - controls sit on the
-        // side they affect), then the M4 tab strip below.
-        tonePanel.setBounds (r.removeFromTop ((int) (r.getHeight() * 0.42)));
         r.removeFromTop (8);
+        cloudPanel.setBounds (r.removeFromTop (124));
+        r.removeFromTop (8);
+
+        // The tab strip gets the full window width - the mod matrix and LFO
+        // tabs are the densest surfaces in the plugin and need it.
         tabs.setBounds (r);
     }
 

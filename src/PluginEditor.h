@@ -20,7 +20,7 @@ namespace keepsake
     {
     public:
         static constexpr int kDesignWidth = 900;
-        static constexpr int kDesignHeight = 540;
+        static constexpr int kDesignHeight = 700;
 
         explicit KeepsakeEditor (KeepsakeProcessor&);
         ~KeepsakeEditor() override;
