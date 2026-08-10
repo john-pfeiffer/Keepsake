@@ -294,7 +294,7 @@ A few decisions worth knowing before editing:
 | `COMPANY_NAME` | `Elan Vital Studios` |
 | `BUNDLE_ID` | `com.elanvitalstudios.keepsake` |
 | `PLUGIN_MANUFACTURER_CODE` | `EVSR` |
-| `PLUGIN_CODE` | `KPSK` |
+| `PLUGIN_CODE` | `Kpsk` |
 
 These are load-bearing: the AU manufacturer/plugin code pair and the bundle ID are
 what saved DAW projects reference, so they must never change after release. (DAW
