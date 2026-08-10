@@ -72,6 +72,12 @@ namespace keepsake::params
     inline constexpr auto voiceMode = "voiceMode"; // Poly/Mono/Legato
     inline constexpr auto glideTime = "glideTime"; // 0..2000 ms
 
+    // --- FX chain (spec §2.6: Saturation -> Chorus -> Reverb -> Out) ---------
+    inline constexpr auto warmthAmount = "warmthAmount"; // 0..100 %
+    inline constexpr auto chorusAmount = "chorusAmount"; // 0..100 %
+    inline constexpr auto airSize      = "airSize";      // 0..100 %
+    inline constexpr auto airMix       = "airMix";       // 0..100 %
+
     // --- Amp envelope (ENV1, hardwired to amp) ------------------------------
     inline constexpr auto ampAttack  = "ampAttack";  // ms
     inline constexpr auto ampDecay   = "ampDecay";   // ms
@@ -133,6 +139,10 @@ namespace keepsake::params
         // normalized-domain combine. Indexed by mod::Dest; entries without an
         // underlying parameter (None, Pitch, Reverb Mix) stay null.
         const juce::NormalisableRange<float>* destRange[12] = {};
+        std::atomic<float>* warmthAmount = nullptr;
+        std::atomic<float>* chorusAmount = nullptr;
+        std::atomic<float>* airSize      = nullptr;
+        std::atomic<float>* airMix       = nullptr;
         std::atomic<float>* ampAttack    = nullptr;
         std::atomic<float>* ampDecay     = nullptr;
         std::atomic<float>* ampSustain   = nullptr;

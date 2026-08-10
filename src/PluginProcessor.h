@@ -1,8 +1,10 @@
 #pragma once
 
 #include "Parameters.h"
+#include "PresetManager.h"
 #include "engine/CaptureBuffer.h"
 #include "engine/Voice.h"
+#include "fx/FxChain.h"
 
 #include <optional>
 
@@ -74,6 +76,23 @@ namespace keepsake
         double getAuditionPositionNormalised() const noexcept;
 
         int getActiveVoiceCount() const noexcept;
+
+        PresetManager& getPresetManager() noexcept { return presetManager; }
+
+        /** The preset bar's label; travels with the plugin state so a host
+            session reload restores it. Not a parameter - it is a name, not a
+            control (audition-transport precedent). */
+        juce::String getPresetDisplayName() const { return presetDisplayName; }
+        void setPresetDisplayName (const juce::String& name) { presetDisplayName = name; }
+
+        /** Spec §3 Randomize: every user-editable parameter except master
+            output (ear protection) and the loaded audio itself. Writes through
+            the normal parameter system with gestures so hosts see the changes.
+            Seeded so tests are deterministic; the UI passes a random seed. */
+        void randomizeParameters (juce::int64 seed);
+
+        /** Restores the pre-randomize stash. False when there is none. */
+        bool undoRandomize();
 
         /** Runs wavetable extraction synchronously on the calling thread and
             publishes the result. The async worker runs exactly the same code; this
@@ -219,6 +238,11 @@ namespace keepsake
         std::atomic<juce::uint64> sourceGeneration { 0 };
         std::vector<const WavetableSet*> pinnedScratch; // message-thread GC scratch
 
+        // Declared before the synth: voices hold a pointer into this bus for
+        // their reverb sends (M5 Air), so it must outlive them.
+        juce::AudioBuffer<float> wetSendBus;
+        FxChain fx;
+
         KeepsakeSynth synth { handles, blockContext };
         int lastVoiceMode = 0; // mode change -> allNotesOff with the steal fade
         juce::LinearSmoothedValue<float> outputGain;
@@ -234,7 +258,12 @@ namespace keepsake
         double embeddedAudioRate = 0.0;
         bool embeddedAudioTrimmed = false;
 
+        juce::String presetDisplayName;
+        std::vector<float> randomizeStash; // normalized values, getParameters() order
+
         double currentSampleRate = 44100.0;
+
+        PresetManager presetManager { *this, PresetManager::defaultDirectory() };
 
         // Declared LAST so they are destroyed FIRST: the worker must be joined and
         // the poller stopped before the stores they touch are torn down.

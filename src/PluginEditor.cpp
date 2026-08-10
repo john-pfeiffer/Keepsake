@@ -3,12 +3,107 @@
 namespace keepsake
 {
     // =========================================================================
+    // PresetBar
+    // =========================================================================
+
+    KeepsakeEditor::PresetBar::PresetBar (KeepsakeProcessor& p) : proc (p)
+    {
+        name.setEditableText (true);
+        name.setTextWhenNothingSelected ("(unsaved)");
+        name.setTooltip ("Preset name - type one and press Save, or pick one to load.");
+        addAndMakeVisible (name);
+
+        for (auto* b : { &prev, &next, &save, &random, &back })
+            addAndMakeVisible (*b);
+
+        prev.setTooltip ("Previous preset");
+        next.setTooltip ("Next preset");
+        save.setTooltip ("Save this sound - keepsake included - as a preset");
+        random.setTooltip ("Randomize every control except the output level and the loaded audio");
+        back.setTooltip ("Undo the last Randomize");
+        back.setEnabled (false);
+
+        prev.onClick = [this] { proc.getPresetManager().loadPrevious(); refresh(); };
+        next.onClick = [this] { proc.getPresetManager().loadNext(); refresh(); };
+
+        save.onClick = [this]
+        {
+            auto entered = name.getText().trim();
+
+            if (entered.isEmpty())
+                entered = "Preset " + juce::String (proc.getPresetManager().getPresetNames().size() + 1);
+
+            proc.getPresetManager().savePreset (entered);
+            refresh();
+        };
+
+        random.onClick = [this]
+        {
+            proc.randomizeParameters (juce::Random::getSystemRandom().nextInt64());
+            back.setEnabled (true);
+        };
+
+        back.onClick = [this]
+        {
+            proc.undoRandomize();
+            back.setEnabled (false); // single-level stash (spec §3)
+        };
+
+        name.onChange = [this]
+        {
+            // Fires for real selections only; refresh() repopulates silently.
+            const auto selected = name.getSelectedItemIndex();
+
+            if (selected >= 0)
+            {
+                proc.getPresetManager().loadPreset (selected);
+                refresh();
+            }
+        };
+
+        refresh();
+    }
+
+    void KeepsakeEditor::PresetBar::refresh()
+    {
+        auto& presets = proc.getPresetManager();
+
+        name.clear (juce::dontSendNotification);
+
+        int id = 1;
+        for (const auto& presetName : presets.getPresetNames())
+            name.addItem (presetName, id++);
+
+        name.setText (proc.getPresetDisplayName(), juce::dontSendNotification);
+    }
+
+    void KeepsakeEditor::PresetBar::resized()
+    {
+        auto r = getLocalBounds();
+
+        prev.setBounds (r.removeFromLeft (26));
+        r.removeFromLeft (2);
+        next.setBounds (r.removeFromLeft (26));
+        r.removeFromLeft (6);
+
+        back.setBounds (r.removeFromRight (52));
+        r.removeFromRight (4);
+        random.setBounds (r.removeFromRight (68));
+        r.removeFromRight (10);
+        save.setBounds (r.removeFromRight (52));
+        r.removeFromRight (6);
+
+        name.setBounds (r);
+    }
+
+    // =========================================================================
     // Content - laid out once, at design size
     // =========================================================================
 
     KeepsakeEditor::Content::Content (KeepsakeProcessor& p)
-        : waveform (p), capture (p)
+        : waveform (p), capture (p), presetBar (p)
     {
+        addAndMakeVisible (presetBar);
         addAndMakeVisible (waveform);
         addAndMakeVisible (capture);
 
@@ -53,9 +148,9 @@ namespace keepsake
         // --- Tone -----------------------------------------------------------
         tonePanel.setColumns (4);
         tonePanel.addKnob (knob (params::focus, "Focus",
-                                 "Focus - morphs between the Cloud (granular) and Tone "
-                                 "(wavetable) engines. Equal-power blend in this version; "
-                                 "engine coupling arrives in M4."));
+                                 "Focus - the one-knob morph from Cloud to Tone. Coupled: "
+                                 "the cloud condenses toward Tone, and Tone ducks and "
+                                 "detunes toward Cloud (spec 2.4)."));
         tonePanel.addKnob (knob (params::toneFrame, "Frame",
                                  "Frame - scans across the wavetable frames extracted from "
                                  "the kept moment."));
@@ -130,6 +225,17 @@ namespace keepsake
                                                            "Amt " + n, "Mod slot " + n + " depth."));
         }
 
+        // --- FX (spec §2.6: deliberately small) ------------------------------
+        fxPanel.setColumns (4);
+        fxPanel.addKnob (knob (params::warmthAmount, "Warmth",
+                               "Soft saturation (tanh), drive-compensated - color, not volume."));
+        fxPanel.addKnob (knob (params::chorusAmount, "Chorus",
+                               "One-knob chorus macro - rate, depth and mix move together."));
+        fxPanel.addKnob (knob (params::airSize, "Size", "Air - reverb room size."));
+        fxPanel.addKnob (knob (params::airMix, "Air",
+                               "Air send level. The dry signal is never ducked; per-voice "
+                               "Reverb Mix modulation adds on top, audible even at 0."));
+
         // Two-panel container tabs need a host component each; KnobPanels are
         // members, so tabs must not delete them.
         tabs.addTab ("Amp", juce::Colour (0xff23262c), &ampPanel, false);
@@ -138,6 +244,7 @@ namespace keepsake
         tabs.addTab ("LFOs", juce::Colour (0xff23262c), &lfoPanel, false);
         tabs.addTab ("Voice", juce::Colour (0xff23262c), &voicePanel, false);
         tabs.addTab ("Mod", juce::Colour (0xff23262c), &modPanel, false);
+        tabs.addTab ("FX", juce::Colour (0xff23262c), &fxPanel, false);
         addAndMakeVisible (tabs);
     }
 
@@ -149,6 +256,8 @@ namespace keepsake
     void KeepsakeEditor::Content::resized()
     {
         auto r = getLocalBounds();
+
+        presetBar.setBounds (r.removeFromTop (30).reduced (8, 3));
 
         // Top half: the waveform is the hero (spec §3).
         waveform.setBounds (r.removeFromTop (r.getHeight() / 2).reduced (8, 8));

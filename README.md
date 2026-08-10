@@ -11,7 +11,7 @@ instant across the keyboard.
 
 ## Status
 
-Milestones **M0–M4** of the Keepsake concept & build specification (v0.1 draft, held
+Milestones **M0–M5** of the Keepsake concept & build specification (v0.1 draft, held
 outside this repo) are implemented. Section references in code comments — "spec §2.2"
 and so on — point at that document.
 
@@ -22,12 +22,14 @@ and so on — point at that document.
 | **M2** Cloud | Granular engine, all six grain params, 12-voice poly, amp envelope | Done |
 | **M3** Tone | Root + cycle extraction, mipmapped wavetable, Frame, Place re-extraction | Done |
 | **M4** Focus + Mod | Focus coupling, filter, ENV2, LFOs, mod matrix, mono/legato | Done |
-| **M5** FX + Presets + Randomize | Warmth/Chorus/Air, preset browser, Randomize | Not started |
+| **M5** FX + Presets + Randomize | Warmth/Chorus/Air, preset browser, Randomize | Done |
 | **M6** Package | Notarized macOS pkg, Inno Setup installer, GitHub Releases | Not started |
 
-Focus now carries the full §2.4 coupling: toward Tone the cloud condenses (density
+Focus carries the full §2.4 coupling: toward Tone the cloud condenses (density
 up, grains shorter, shimmer down); toward Cloud, Tone ducks early and detunes
-slightly. M4 controls live in a stock tab strip (Amp/Filter/Env2/LFOs/Voice/Mod).
+slightly. M4/M5 controls live in a stock tab strip (Amp/Filter/Env2/LFOs/Voice/
+Mod/FX), with the preset bar — prev/next, name, save, Randomize, Back — across
+the top.
 
 ### Milestone exit tests
 
@@ -64,6 +66,19 @@ are tests in `tests/`, not claims:
   LFO sweeps on Cutoff/Frame/Focus/Pitch/Place, Loop vs Ping-Pong wrap proven
   distinct, mono holds one voice under a chord, legato provably skips the
   retrigger, glide measured mid-flight by FFT.
+- **M5** — FX correctness: Warmth saturates (third harmonic +25 dB over a
+  <−50 dB clean baseline) at level (±3 dB RMS, `fx_warmthAddsHarmonics…`);
+  Chorus thickens at level; Air rings a decaying tail after the amp release and
+  never guillotines it when the Mix knob closes (`fx_closingTheMixKnob…`);
+  the per-voice Reverb Mix send — the M4 contract — is audible at Mix 0
+  (`fx_perVoiceReverbSendIsAudibleAtMixZero`); the whole chain preserves
+  bit-identical block-size independence; knob sweeps through zero are
+  click-free.
+- **M5** — presets and Randomize: save/load round-trips parameters *and* the
+  embedded keepsake; a preset missing newer parameters loads them at defaults,
+  not stale values (pins the JUCE `replaceState` behavior we rely on);
+  prev/next cycle sorted names; Randomize rolls everything except master
+  output, restores exactly on undo, and is safe mid-playback.
 
 What is *not* covered here: the spec's manual matrix (Ableton, Logic, Reaper, FL Studio
 at 44.1/48/96k) is a human step before release. Nothing in this repo has been loaded
@@ -112,16 +127,23 @@ Reference figures (Release, 48 kHz, 256-sample blocks, one core of a 4-core clou
 container — a slower machine than the spec's "modern laptop"):
 
 ```
-   1 voices: 0.39 % of one core   (realtime factor 258x)
-   4 voices: 1.55 % of one core   (realtime factor  65x)
-   8 voices: ~3.0 % of one core   (realtime factor  ~33x)
-  12 voices: ~4.5 % of one core   (realtime factor  ~21x)
+  FX bypassed (all FX at 0):
+   1 voices: ~0.5 % of one core   (realtime factor ~200x)
+   4 voices: ~2.0 % of one core   (realtime factor  ~50x)
+   8 voices: ~4.0 % of one core   (realtime factor  ~25x)
+  12 voices: ~5.9 % of one core   (realtime factor  ~17x)
+
+  with FX (Warmth 50, Chorus 50, Air 30):
+   8 voices: ~4.9 % of one core   (realtime factor  ~21x)
+  12 voices: ~6.8 % of one core   (realtime factor  ~15x)
 ```
 
 Measured at Focus 0.5 — Cloud, Tone, filter and mod matrix all active on every
-voice. Container run-to-run variance is a few tenths of a percent; 8 voices sits
-comfortably inside the spec's ~8% budget. (M4's 32-sample render chunks turned out
-slightly *faster* than M3's large chunks — better cache locality.)
+voice; the FX rows add the whole master chain. Even 12 voices with FX sits
+inside the spec's ~8% budget. Absolute numbers drift with the shared
+container's day-to-day speed (the M4 README quoted ~3.0% for 8 voices; the M4
+*code* measures ~3.9% on today's machine — same code, slower day), so compare
+rows within one run, not across READMEs.
 
 ---
 
@@ -137,6 +159,10 @@ slightly *faster* than M3's large chunks — better cache locality.)
 - **Play file / Play keep** audition the source and the captured window.
 - Play MIDI. **Root** tells the engine what pitch the source material is; everything
   tracks from there.
+- **Presets** live in the top bar: type a name, *Save*; step with **< >** or pick
+  from the list. A preset embeds its keepsake, so it plays anywhere. **Random**
+  rolls every control except the output level (and the loaded audio); **Back**
+  undoes it. Presets are stored in `Documents/Keepsake/Presets`.
 
 Every control is an automatable host parameter, including Place and Keep Length — the
 waveform bracket writes through the parameter system with proper begin/end gestures, so
@@ -177,9 +203,33 @@ A few decisions worth knowing before editing:
 - **ModWheel/aftertouch are captured at the synth level**, not per voice —
   juce::Synthesiser only dispatches controller events to voices that are already
   sounding, so a wheel moved before the note would otherwise be lost.
-- **The Reverb Mix mod destination is a per-voice wet-send level** — evaluated
-  since M4, consumed by M5's FX chain, which must implement a dry bus plus a
-  per-voice-scaled wet bus for it.
+- **Air is a send-return, not an insert.** The reverb input is
+  (main bus × Mix) + the per-voice wet-send bus, and the wet return is added on
+  top — the dry signal is never ducked, and the Reverb Mix mod destination
+  (a per-voice send level since M4) has a real bus to land in. Voices add their
+  post-filter, post-envelope signal into the bus per sample through a smoothed
+  send gain, same discipline as the blend gains.
+- **FX activate on parameters, never on signal content.** Signal-gated
+  activation would start an effect's internal smoothing ramps at a
+  block-quantized position and break bit-identical block-size independence.
+  Deactivation cools down instead of hard-cutting: the chorus lets its internal
+  mix smoothing settle, the reverb rings out until its own output is silent
+  (a fixed wall-clock tail would truncate big rooms), and both reset on the
+  way out so no stale delay-line audio replays on re-entry. With every FX
+  param at default the chain is exactly bypassed — the pre-M5 bit-identity
+  tests still hold.
+- **juce::Reverb's gains are smoothed from demo defaults** (dry 0.4!) —
+  parameters must be applied *before* `setSampleRate`, whose reset snaps the
+  smoothers. Otherwise the first engaged block leaks a dry-gain ramp.
+- **Preset files are the state blob, byte for byte.** Same validation, same
+  embedded audio. Missing parameters (older presets, M4-era sessions) load at
+  defaults — that is JUCE 8 `replaceState` behavior, pinned by
+  `presets_missingParametersLoadAsDefaultsNotStaleValues`; if a JUCE upgrade
+  changes it, defaults must be merged into the tree in `setStateInformation`.
+- **Randomize excludes exactly one parameter: master output** (spec's ear
+  rule); the loaded audio is not a parameter. It writes through
+  `setValueNotifyingHost` with gestures so hosts record it, and stashes one
+  level of undo.
 - **Mip selection is safe-side:** continuous level `log2(inc) + 1`, so both blended
   levels stay inside the alias limit at every pitch. Plain `log2(inc)` blends a
   floor level that keeps twice the safe harmonic count — measurably aliased at the
