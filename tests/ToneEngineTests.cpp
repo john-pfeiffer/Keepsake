@@ -178,7 +178,13 @@ KTEST_CASE (tone_setSwapCrossfadesWithoutClicks)
     {
         const auto n = juce::jmin (256, out.getNumSamples() - pos);
         const auto* latest = ((pos / 3001) % 2 == 0) ? setA.get() : setB.get();
-        tone.process (out.getWritePointer (0, pos), n, latest, 220.0, 0.5);
+
+        // M4's Focus coupling detunes Tone by up to 7 cents; the swap fade's
+        // correctness argument (shared phase, fundamental-aligned sets) only
+        // involves the phase accumulator, not the frequency feeding it - this
+        // detuned frequency proves that claim stays true.
+        tone.process (out.getWritePointer (0, pos), n, latest,
+                      220.0 * std::pow (2.0, 7.0 / 1200.0), 0.5);
         pos += n;
     }
 

@@ -11,7 +11,7 @@ instant across the keyboard.
 
 ## Status
 
-Milestones **M0–M3** of the Keepsake concept & build specification (v0.1 draft, held
+Milestones **M0–M4** of the Keepsake concept & build specification (v0.1 draft, held
 outside this repo) are implemented. Section references in code comments — "spec §2.2"
 and so on — point at that document.
 
@@ -21,13 +21,13 @@ and so on — point at that document.
 | **M1** Capture | File import, zoomable waveform, draggable capture bracket, audition, capture embedded in state | Done |
 | **M2** Cloud | Granular engine, all six grain params, 12-voice poly, amp envelope | Done |
 | **M3** Tone | Root + cycle extraction, mipmapped wavetable, Frame, Place re-extraction | Done |
-| **M4** Focus + Mod | Focus coupling, filter, ENV2, LFOs, mod matrix | Not started |
+| **M4** Focus + Mod | Focus coupling, filter, ENV2, LFOs, mod matrix, mono/legato | Done |
 | **M5** FX + Presets + Randomize | Warmth/Chorus/Air, preset browser, Randomize | Not started |
 | **M6** Package | Notarized macOS pkg, Inno Setup installer, GitHub Releases | Not started |
 
-The Focus knob ships in M3 as a plain equal-power Cloud/Tone blend; M4 upgrades the
-same parameter with engine coupling. The UI reserves space for the M4-M5 controls
-and says so on screen, rather than showing controls that do nothing.
+Focus now carries the full §2.4 coupling: toward Tone the cloud condenses (density
+up, grains shorter, shimmer down); toward Cloud, Tone ducks early and detunes
+slightly. M4 controls live in a stock tab strip (Amp/Filter/Env2/LFOs/Voice/Mod).
 
 ### Milestone exit tests
 
@@ -52,6 +52,18 @@ are tests in `tests/`, not claims:
 - **M3** — "Place automation sweeps without clicks":
   `processor_placeSweepWithReExtractionIsClickFree` steps Place and re-extracts ten
   times across a sweep, rendering through every set-swap crossfade.
+- **M4** — "the one-knob morph feels musical" has a machine proxy:
+  `processor_focusSweepIsClickFreeAndLevelStable` sweeps Focus end to end and holds
+  every 100 ms RMS window inside a ±3 dB corridor (texture may change, level may
+  not), and `coupling_curvesKeepTheirLoadBearingProperties` asserts the
+  density×size reciprocal invariant that makes that possible. The human demo
+  remains a human test.
+- **M4** — modulation correctness: bit-identical renders across block sizes *with
+  an LFO active* (`processor_blockSizeIndependentWithLfoModulationActive` — the
+  control tick is anchored to the voice-local clock, not host blocks), click-free
+  LFO sweeps on Cutoff/Frame/Focus/Pitch/Place, Loop vs Ping-Pong wrap proven
+  distinct, mono holds one voice under a chord, legato provably skips the
+  retrigger, glide measured mid-flight by FFT.
 
 What is *not* covered here: the spec's manual matrix (Ableton, Logic, Reaper, FL Studio
 at 44.1/48/96k) is a human step before release. Nothing in this repo has been loaded
@@ -100,14 +112,16 @@ Reference figures (Release, 48 kHz, 256-sample blocks, one core of a 4-core clou
 container — a slower machine than the spec's "modern laptop"):
 
 ```
-   1 voices: 0.54 % of one core   (realtime factor 184.8x)
-   4 voices: 2.27 % of one core   (realtime factor  44.1x)
-   8 voices: 4.50 % of one core   (realtime factor  22.2x)
-  12 voices: 6.74 % of one core   (realtime factor  14.8x)
+   1 voices: 0.39 % of one core   (realtime factor 258x)
+   4 voices: 1.55 % of one core   (realtime factor  65x)
+   8 voices: ~3.0 % of one core   (realtime factor  ~33x)
+  12 voices: ~4.5 % of one core   (realtime factor  ~21x)
 ```
 
-Measured at Focus 0.5 — Cloud and Tone both active on every voice, the worst case.
-8 voices at 4.50% is inside the spec's ~8% budget.
+Measured at Focus 0.5 — Cloud, Tone, filter and mod matrix all active on every
+voice. Container run-to-run variance is a few tenths of a percent; 8 voices sits
+comfortably inside the spec's ~8% budget. (M4's 32-sample render chunks turned out
+slightly *faster* than M3's large chunks — better cache locality.)
 
 ---
 
@@ -147,6 +161,25 @@ A few decisions worth knowing before editing:
   fade, and a note's lifetime), so `WavetableStore::collectGarbage` skips anything a
   voice still references — wall-clock retention alone would free a set mid-note if
   the host suspends processing. Do not simplify this back to the SourceStore rule.
+- **All parameter/mod evaluation happens on a 32-sample control tick anchored to
+  the voice-local sample clock** — never to host block boundaries. That anchoring
+  is what keeps renders bit-identical across block sizes even with LFOs running;
+  a test enforces it, and a mutation check proves the test catches the
+  block-anchored version.
+- **Modulation combines in the destination's normalized domain** (skewed ranges
+  get perceptually uniform mod for free); modulated values are never written back
+  to the APVTS. Pitch is the one exception (additive semitones, ±12 st, feeding
+  both engines). Place modulation affects Cloud only — Tone extraction follows the
+  base parameter, by design (see the plan notes in the M4 commit).
+- **Every AudioParameterChoice list is frozen ABI** — host automation stores
+  index/(N−1), so changing any list's length silently remaps recorded automation.
+  Mod source/dest, LFO shapes/divisions, filter types, voice modes: final.
+- **ModWheel/aftertouch are captured at the synth level**, not per voice —
+  juce::Synthesiser only dispatches controller events to voices that are already
+  sounding, so a wheel moved before the note would otherwise be lost.
+- **The Reverb Mix mod destination is a per-voice wet-send level** — evaluated
+  since M4, consumed by M5's FX chain, which must implement a dry bus plus a
+  per-voice-scaled wet bus for it.
 - **Mip selection is safe-side:** continuous level `log2(inc) + 1`, so both blended
   levels stay inside the alias limit at every pitch. Plain `log2(inc)` blends a
   floor level that keeps twice the safe harmonic count — measurably aliased at the

@@ -13,6 +13,100 @@ namespace keepsake
         inline constexpr auto audioTrimmed = "audioTrimmed";
     }
 
+    // =========================================================================
+    // KeepsakeSynth: mono/legato note handling
+    // =========================================================================
+
+    void KeepsakeProcessor::KeepsakeSynth::noteOn (int midiChannel, int midiNoteNumber,
+                                                   float velocity)
+    {
+        const auto mode = (int) std::lround (handles.voiceMode->load());
+
+        if (mode == 0) // Poly
+        {
+            juce::Synthesiser::noteOn (midiChannel, midiNoteNumber, velocity);
+            return;
+        }
+
+        const juce::ScopedLock sl (lock);
+
+        // Push (unique) onto the held stack; newest is the sounding note.
+        for (int i = 0; i < heldCount; ++i)
+        {
+            if (held[(size_t) i].note == midiNoteNumber)
+            {
+                for (int j = i; j < heldCount - 1; ++j)
+                    held[(size_t) j] = held[(size_t) j + 1];
+                --heldCount;
+                break;
+            }
+        }
+
+        if (heldCount < (int) held.size())
+            held[(size_t) heldCount++] = { midiNoteNumber, velocity };
+
+        auto* voice = monoVoice();
+
+        if (voice == nullptr)
+            return;
+
+        if (! voice->isVoiceActive())
+        {
+            if (auto* sound = getSound (0).get())
+                startVoice (voice, sound, midiChannel, midiNoteNumber, velocity);
+        }
+        else
+        {
+            // Mono retriggers the envelopes; Legato lets them keep running.
+            voice->changeNote (midiNoteNumber, velocity, mode == 1);
+        }
+    }
+
+    void KeepsakeProcessor::KeepsakeSynth::noteOff (int midiChannel, int midiNoteNumber,
+                                                    float velocity, bool allowTailOff)
+    {
+        const auto mode = (int) std::lround (handles.voiceMode->load());
+
+        if (mode == 0) // Poly
+        {
+            juce::Synthesiser::noteOff (midiChannel, midiNoteNumber, velocity, allowTailOff);
+            return;
+        }
+
+        const juce::ScopedLock sl (lock);
+
+        const auto wasSounding = heldCount > 0
+                                 && held[(size_t) (heldCount - 1)].note == midiNoteNumber;
+
+        for (int i = 0; i < heldCount; ++i)
+        {
+            if (held[(size_t) i].note == midiNoteNumber)
+            {
+                for (int j = i; j < heldCount - 1; ++j)
+                    held[(size_t) j] = held[(size_t) j + 1];
+                --heldCount;
+                break;
+            }
+        }
+
+        auto* voice = monoVoice();
+
+        if (voice == nullptr || ! wasSounding)
+            return;
+
+        if (heldCount > 0)
+        {
+            // Return to the most recent still-held note. Classic mono retriggers
+            // on the way back down too; Legato glides without retrigger.
+            const auto& previous = held[(size_t) (heldCount - 1)];
+            voice->changeNote (previous.note, previous.velocity, mode == 1);
+        }
+        else
+        {
+            voice->stopNote (velocity, allowTailOff);
+        }
+    }
+
     KeepsakeProcessor::KeepsakeProcessor()
         : juce::AudioProcessor (BusesProperties()
                                     .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
@@ -23,7 +117,7 @@ namespace keepsake
         synth.addSound (new KeepsakeSound());
 
         for (int i = 0; i < kNumVoices; ++i)
-            synth.addVoice (new KeepsakeVoice (handles, sourceStore, wavetableStore, i));
+            synth.addVoice (new KeepsakeVoice (handles, sourceStore, wavetableStore, blockContext, i));
 
         // Spec §2.5: oldest-note stealing.
         synth.setNoteStealingEnabled (true);
@@ -253,7 +347,29 @@ namespace keepsake
     {
         juce::ScopedNoDenormals noDenormals;
 
+        // Host tempo for synced LFOs, read once per block. No playhead / no tempo
+        // (the test harness) deterministically falls back to 120 BPM.
+        if (auto* head = getPlayHead())
+        {
+            if (auto position = head->getPosition())
+                if (auto bpm = position->getBpm())
+                    blockContext.bpm.store (*bpm, std::memory_order_relaxed);
+        }
+
         buffer.clear();
+
+        // Switching voice mode mid-performance releases everything through the
+        // existing 5ms steal fade, so the mode change is graceful, and the mono
+        // stack cannot inherit stale poly state.
+        {
+            const auto mode = (int) std::lround (handles.voiceMode->load());
+
+            if (mode != lastVoiceMode)
+            {
+                lastVoiceMode = mode;
+                synth.allNotesOff (0, true);
+            }
+        }
 
         synth.renderNextBlock (buffer, midi, 0, buffer.getNumSamples());
 

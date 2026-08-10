@@ -67,27 +67,78 @@ namespace keepsake
                                  "modulated."));
         addAndMakeVisible (tonePanel);
 
-        // --- Amp envelope ---------------------------------------------------
-        ampPanel.setColumns (4);
+        // --- Amp env + output ------------------------------------------------
+        ampPanel.setColumns (5);
         ampPanel.addKnob (knob (params::ampAttack, "A", "ENV1 Attack (hardwired to amp)."));
         ampPanel.addKnob (knob (params::ampDecay, "D", "ENV1 Decay."));
         ampPanel.addKnob (knob (params::ampSustain, "S", "ENV1 Sustain."));
         ampPanel.addKnob (knob (params::ampRelease, "R", "ENV1 Release."));
-        addAndMakeVisible (ampPanel);
+        ampPanel.addKnob (knob (params::masterGain, "Level",
+                                "Master output level. Excluded from Randomize."));
 
-        // --- Output ---------------------------------------------------------
-        outputPanel.setColumns (1);
-        outputPanel.addKnob (knob (params::masterGain, "Level",
-                                   "Master output level. Excluded from Randomize."));
-        addAndMakeVisible (outputPanel);
+        // --- Filter ----------------------------------------------------------
+        filterPanel.setColumns (4);
+        filterPanel.addKnob (knob (params::filterType, "Type", "Filter type: LP / BP / HP."));
+        filterPanel.addKnob (knob (params::filterCutoff, "Cutoff",
+                                   "Filter cutoff. Keytrack and modulation apply on top."));
+        filterPanel.addKnob (knob (params::filterResonance, "Res", "Filter resonance (Q)."));
+        filterPanel.addKnob (knob (params::filterKeytrack, "Keytrk",
+                                   "Keytrack - how much cutoff follows the played note (C3 reference)."));
 
-        // Honest about what is not built yet, rather than showing dead controls.
-        placeholder.setText ("Filter, LFOs, mod matrix and FX arrive in M4-M5.",
-                             juce::dontSendNotification);
-        placeholder.setJustificationType (juce::Justification::centred);
-        placeholder.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.30f));
-        placeholder.setFont (juce::FontOptions (12.0f));
-        addAndMakeVisible (placeholder);
+        // --- ENV2 + voice ----------------------------------------------------
+        env2Panel.setColumns (4);
+        env2Panel.addKnob (knob (params::env2Attack, "A", "ENV2 Attack (assignable envelope)."));
+        env2Panel.addKnob (knob (params::env2Decay, "D", "ENV2 Decay."));
+        env2Panel.addKnob (knob (params::env2Sustain, "S", "ENV2 Sustain."));
+        env2Panel.addKnob (knob (params::env2Release, "R", "ENV2 Release."));
+
+        voicePanel.setColumns (2);
+        voicePanel.addKnob (knob (params::voiceMode, "Mode",
+                                  "Voice mode: Poly, Mono (retriggers), Legato (doesn't)."));
+        voicePanel.addKnob (knob (params::glideTime, "Glide",
+                                  "Glide time between notes in Mono/Legato, constant-time."));
+
+        // --- LFOs ------------------------------------------------------------
+        lfoPanel.setColumns (5);
+
+        for (auto ids : { std::array<const char*, 5> { params::lfo1Shape, params::lfo1Rate,
+                                                       params::lfo1Sync, params::lfo1Division,
+                                                       params::lfo1Retrig },
+                          std::array<const char*, 5> { params::lfo2Shape, params::lfo2Rate,
+                                                       params::lfo2Sync, params::lfo2Division,
+                                                       params::lfo2Retrig } })
+        {
+            lfoPanel.addKnob (knob (ids[0], "Shape", "LFO shape: Sine / Triangle / Saw / S&H."));
+            lfoPanel.addKnob (knob (ids[1], "Rate", "LFO rate in Hz (Free mode)."));
+            lfoPanel.addKnob (knob (ids[2], "Sync", "Free-running Hz or tempo-synced."));
+            lfoPanel.addKnob (knob (ids[3], "Div", "Tempo division when synced."));
+            lfoPanel.addKnob (knob (ids[4], "Retrig",
+                                    "On: phase restarts at every note. Off: free-running."));
+        }
+
+        // --- Mod matrix ------------------------------------------------------
+        modPanel.setColumns (6);
+
+        for (int slot = 0; slot < 6; ++slot)
+        {
+            const auto n = juce::String (slot + 1);
+            modPanel.addKnob (std::make_unique<ParamKnob> (state, params::slotId ("Source", slot),
+                                                           "Src " + n, "Mod slot " + n + " source."));
+            modPanel.addKnob (std::make_unique<ParamKnob> (state, params::slotId ("Dest", slot),
+                                                           "Dst " + n, "Mod slot " + n + " destination."));
+            modPanel.addKnob (std::make_unique<ParamKnob> (state, params::slotId ("Depth", slot),
+                                                           "Amt " + n, "Mod slot " + n + " depth."));
+        }
+
+        // Two-panel container tabs need a host component each; KnobPanels are
+        // members, so tabs must not delete them.
+        tabs.addTab ("Amp", juce::Colour (0xff23262c), &ampPanel, false);
+        tabs.addTab ("Filter", juce::Colour (0xff23262c), &filterPanel, false);
+        tabs.addTab ("Env2", juce::Colour (0xff23262c), &env2Panel, false);
+        tabs.addTab ("LFOs", juce::Colour (0xff23262c), &lfoPanel, false);
+        tabs.addTab ("Voice", juce::Colour (0xff23262c), &voicePanel, false);
+        tabs.addTab ("Mod", juce::Colour (0xff23262c), &modPanel, false);
+        addAndMakeVisible (tabs);
     }
 
     void KeepsakeEditor::Content::paint (juce::Graphics& g)
@@ -115,15 +166,10 @@ namespace keepsake
         cloudPanel.setBounds (left);
 
         // Right column: Tone on top (Focus lives with it - controls sit on the
-        // side they affect, and Tone is the right-hand engine per spec layout),
-        // then the envelope, then output + the remaining-milestones note.
-        tonePanel.setBounds (r.removeFromTop ((int) (r.getHeight() * 0.45)));
+        // side they affect), then the M4 tab strip below.
+        tonePanel.setBounds (r.removeFromTop ((int) (r.getHeight() * 0.42)));
         r.removeFromTop (8);
-        ampPanel.setBounds (r.removeFromTop ((int) (r.getHeight() * 0.55)));
-        r.removeFromTop (8);
-        outputPanel.setBounds (r.removeFromLeft (r.getWidth() / 3));
-        r.removeFromLeft (8);
-        placeholder.setBounds (r);
+        tabs.setBounds (r);
     }
 
     // =========================================================================
