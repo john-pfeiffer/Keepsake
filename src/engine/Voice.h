@@ -91,6 +91,12 @@ namespace keepsake
 
         ToneEngine& getToneEngineForTests() noexcept { return tone; }
 
+        /** The processor's shared reverb send bus (M5). Set once at prepare;
+            the voice adds its post-filter, post-envelope output into it scaled
+            by the smoothed ModSnapshot::reverbSend - the per-voice wet-send
+            contract the Reverb Mix mod destination has carried since M4. */
+        void setWetSendBus (juce::AudioBuffer<float>* bus) noexcept { wetSendBus = bus; }
+
     private:
         void updateEnvelopeParameters();
         double computePlaybackRatio() const;
@@ -123,6 +129,9 @@ namespace keepsake
         juce::AudioBuffer<float> voiceBuffer; // pre-allocated in setCurrentPlaybackSampleRate
         juce::AudioBuffer<float> toneBuffer;  // mono Tone scratch, same capacity
         juce::LinearSmoothedValue<float> cloudGain, toneGain; // equal-power focus blend
+
+        juce::AudioBuffer<float>* wetSendBus = nullptr; // processor-owned (M5 Air)
+        juce::LinearSmoothedValue<float> wetSend;       // ModSnapshot::reverbSend, smoothed
 
         int noteNumber = 60;
         float noteVelocity = 1.0f;

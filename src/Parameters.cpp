@@ -209,6 +209,16 @@ namespace keepsake::params
         layout.add (makeFloat (glideTime, "Glide",
                                skewed (0.0f, 2000.0f, 100.0f), 50.0f, " ms", 0));
 
+        // --- FX chain (spec §2.6) -------------------------------------------
+        // All except Air Size default to 0 (fully dry): the bit-identity
+        // regression tests (block-size independence, focus-0-equals-M2) render
+        // at defaults, and a dry default keeps the whole FX section on its
+        // exact-bypass path there.
+        layout.add (makeFloat (warmthAmount, "Warmth", Range (0.0f, 100.0f), 0.0f, " %", 0));
+        layout.add (makeFloat (chorusAmount, "Chorus", Range (0.0f, 100.0f), 0.0f, " %", 0));
+        layout.add (makeFloat (airSize, "Air Size", Range (0.0f, 100.0f), 50.0f, " %", 0));
+        layout.add (makeFloat (airMix, "Air Mix", Range (0.0f, 100.0f), 0.0f, " %", 0));
+
         // --- Amp envelope ---------------------------------------------------
         layout.add (makeFloat (ampAttack, "Attack",
                                skewed (1.0f, 5000.0f, 100.0f), 20.0f, " ms", 1));
@@ -294,6 +304,10 @@ namespace keepsake::params
         destRange[7]  = rangeOf (params::grainShimmer);
         destRange[8]  = rangeOf (params::toneFrame);
         destRange[10] = rangeOf (params::grainSpread);
+        warmthAmount  = state.getRawParameterValue (params::warmthAmount);
+        chorusAmount  = state.getRawParameterValue (params::chorusAmount);
+        airSize       = state.getRawParameterValue (params::airSize);
+        airMix        = state.getRawParameterValue (params::airMix);
         ampAttack     = state.getRawParameterValue (params::ampAttack);
         ampDecay      = state.getRawParameterValue (params::ampDecay);
         ampSustain    = state.getRawParameterValue (params::ampSustain);

@@ -43,6 +43,8 @@ namespace keepsake
 
             cloudGain.reset (newRate, 0.02);
             toneGain.reset (newRate, 0.02);
+            wetSend.reset (newRate, 0.015);
+            wetSend.setCurrentAndTargetValue (0.0f);
         }
     }
 
@@ -86,6 +88,10 @@ namespace keepsake
         filter.reset();
         cutoffNeedsSnap = true;
         voiceClock = 0; // re-anchor the control-tick grid to this note
+
+        // The reverb send fades in from silence over its smoothing time - a
+        // voice must not open a note with a full-level send step.
+        wetSend.setCurrentAndTargetValue (0.0f);
 
         updateEnvelopeParameters();
         env2.noteOn();
@@ -244,6 +250,40 @@ namespace keepsake
                                       voiceBuffer, juce::jmin (ch, 1), 0,
                                       chunk, velocityGain);
 
+            // Per-voice reverb send (M5 Air): the same post-filter,
+            // post-envelope signal, scaled by the smoothed snapshot send
+            // level. Per-sample getNextValue like the blend gains - a
+            // per-chunk gain ramp would round differently when a control tick
+            // straddles a host block boundary and break the bit-identical
+            // block-size guarantee. The active test mirrors cloudActive:
+            // current OR target nonzero, so a ramp-down keeps its tail.
+            {
+                const auto sendActive = wetSend.getCurrentValue() > 0.0f
+                                        || wetSend.getTargetValue() > 0.0f;
+
+                if (sendActive && wetSendBus != nullptr)
+                {
+                    const auto pos = startSample + offset;
+                    const auto collected = juce::jlimit (0, chunk,
+                                                         wetSendBus->getNumSamples() - pos);
+                    const auto busChannels = wetSendBus->getNumChannels();
+
+                    for (int i = 0; i < chunk; ++i)
+                    {
+                        const auto g = velocityGain * wetSend.getNextValue();
+
+                        if (i < collected)
+                            for (int ch = 0; ch < busChannels; ++ch)
+                                wetSendBus->getWritePointer (ch)[pos + i]
+                                    += voiceBuffer.getReadPointer (juce::jmin (ch, 1))[i] * g;
+                    }
+                }
+                else
+                {
+                    wetSend.skip (chunk); // keep the smoother on the sample clock
+                }
+            }
+
             offset += chunk;
             voiceClock += chunk;
         }
@@ -317,6 +357,7 @@ namespace keepsake
         }
 
         snapshot = evaluateModMatrix (slots, modSources);
+        wetSend.setTargetValue (snapshot.reverbSend); // consumed by the M5 Air send
 
         // --- Apply: normalized-domain combine on every destination that has an
         // underlying parameter (offset 0 short-circuits, keeping the static path

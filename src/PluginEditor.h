@@ -33,6 +33,25 @@ namespace keepsake
         void filesDropped (const juce::StringArray& files, int x, int y) override;
 
     private:
+        /** The spec §3 top bar: prev/next, name, save - plus Randomize and its
+            single-level undo. Momentary actions, not parameters (audition
+            precedent); the name itself travels inside the plugin state. */
+        class PresetBar : public juce::Component
+        {
+        public:
+            explicit PresetBar (KeepsakeProcessor&);
+            void resized() override;
+
+            /** Re-reads the preset list and the current display name. */
+            void refresh();
+
+        private:
+            KeepsakeProcessor& proc;
+            juce::TextButton prev { "<" }, next { ">" }, save { "Save" },
+                             random { "Random" }, back { "Back" };
+            juce::ComboBox name;
+        };
+
         /** Holds the real UI at design size; the editor scales this one child. */
         class Content : public juce::Component
         {
@@ -45,6 +64,7 @@ namespace keepsake
             CapturePanel capture;
 
         private:
+            PresetBar presetBar;
             KnobPanel cloudPanel { "CLOUD  -  granular" };
             KnobPanel tonePanel { "TONE  -  wavetable" };
             KnobPanel rootPanel { "KEEPSAKE" };
@@ -58,6 +78,7 @@ namespace keepsake
             KnobPanel lfoPanel { "LFO 1 / LFO 2" };
             KnobPanel voicePanel { "VOICE" };
             KnobPanel modPanel { "MOD MATRIX" };
+            KnobPanel fxPanel { "FX  -  Warmth / Chorus / Air" };
         };
 
         KeepsakeProcessor& proc;

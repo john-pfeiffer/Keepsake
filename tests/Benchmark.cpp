@@ -22,6 +22,11 @@ namespace ktest
                   << "  sample rate " << sampleRate << " Hz, block " << blockSize << "\n"
                   << "  (CPU % is the share of one core needed to keep up in real time)\n  Focus 0.5: Cloud and Tone both active on every voice\n\n";
 
+        for (bool fxActive : { false, true })
+        {
+        std::cout << (fxActive ? "  with FX (Warmth 50, Chorus 50, Air 30):\n"
+                               : "  FX bypassed (all FX at 0):\n");
+
         for (int numVoices : { 1, 4, 8, 12 })
         {
             keepsake::KeepsakeProcessor proc;
@@ -61,6 +66,16 @@ namespace ktest
             if (auto* focus = proc.getState().getParameter ("focus"))
                 focus->setValueNotifyingHost (0.5f);
 
+            if (fxActive)
+            {
+                for (const auto* id : { "warmthAmount", "chorusAmount", "airSize" })
+                    if (auto* param = proc.getState().getParameter (id))
+                        param->setValueNotifyingHost (0.5f);
+
+                if (auto* mix = proc.getState().getParameter ("airMix"))
+                    mix->setValueNotifyingHost (0.3f);
+            }
+
             juce::AudioBuffer<float> audio (2, blockSize);
 
             // Sustained notes, so every voice is genuinely running.
@@ -97,5 +112,6 @@ namespace ktest
         }
 
         std::cout << std::endl;
+        }
     }
 }

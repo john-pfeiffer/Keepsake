@@ -11,6 +11,7 @@ namespace keepsake
         inline constexpr auto audioName  = "audioName";
         inline constexpr auto audioRate  = "audioRate";
         inline constexpr auto audioTrimmed = "audioTrimmed";
+        inline constexpr auto presetName   = "presetName";
     }
 
     // =========================================================================
@@ -118,6 +119,12 @@ namespace keepsake
 
         for (int i = 0; i < kNumVoices; ++i)
             synth.addVoice (new KeepsakeVoice (handles, sourceStore, wavetableStore, blockContext, i));
+
+        // The AudioBuffer object's address is stable across setSize, so the
+        // voices can hold the pointer from construction onward.
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* voice = dynamic_cast<KeepsakeVoice*> (synth.getVoice (i)))
+                voice->setWetSendBus (&wetSendBus);
 
         // Spec §2.5: oldest-note stealing.
         synth.setNoteStealingEnabled (true);
@@ -320,10 +327,22 @@ namespace keepsake
 
         synth.setCurrentPlaybackSampleRate (sampleRate);
 
+        // The send bus and FX are sized to at least the voice-scratch maximum,
+        // not just the host's declared block size - hosts treat that hint as
+        // advisory, and this codebase already distrusts it.
+        {
+            const auto maxBlock = juce::jmax (FxChain::kMaxBlockSamples, samplesPerBlock);
+            const auto channels = juce::jlimit (1, 2, getTotalNumOutputChannels());
+
+            wetSendBus.setSize (channels, maxBlock);
+            wetSendBus.clear();
+            fx.prepare (sampleRate, maxBlock, channels,
+                        handles.warmthAmount->load() * 0.01f,
+                        handles.airSize->load() * 0.01f);
+        }
+
         outputGain.reset (sampleRate, 0.02);
         outputGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (handles.masterGain->load()));
-
-        juce::ignoreUnused (samplesPerBlock);
     }
 
     void KeepsakeProcessor::releaseResources()
@@ -339,8 +358,10 @@ namespace keepsake
 
     double KeepsakeProcessor::getTailLengthSeconds() const
     {
-        // Longest possible amp release, so hosts do not cut the tail on the last note.
-        return 10.0;
+        // Longest possible amp release, so hosts do not cut the tail on the last
+        // note - plus the Air tail on top when the reverb can be running.
+        const auto reverbInPlay = handles.airMix != nullptr && handles.airMix->load() > 0.0f;
+        return reverbInPlay ? 20.0 : 10.0;
     }
 
     void KeepsakeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -371,7 +392,31 @@ namespace keepsake
             }
         }
 
+        // Collect this block's per-voice reverb sends, render, then run the
+        // master FX (spec §2.6 flow: voices -> Saturation -> Chorus -> Reverb).
+        wetSendBus.clear (0, juce::jmin (buffer.getNumSamples(), wetSendBus.getNumSamples()));
+
         synth.renderNextBlock (buffer, midi, 0, buffer.getNumSamples());
+
+        {
+            // The reverb also runs whenever a mod slot routes to Reverb Mix -
+            // the per-voice send must be audible at Mix 0 (that is its point).
+            // Parameter-driven, not signal-driven: see FxChain's header.
+            bool reverbRouted = false;
+
+            for (int i = 0; i < mod::kNumSlots; ++i)
+                reverbRouted = reverbRouted
+                               || ((int) std::lround (handles.modDest[i]->load()) == mod::destReverbMix
+                                   && (int) std::lround (handles.modSource[i]->load()) != mod::srcNone
+                                   && ! juce::exactlyEqual (handles.modDepth[i]->load(), 0.0f));
+
+            fx.process (buffer, wetSendBus,
+                        handles.warmthAmount->load() * 0.01f,
+                        handles.chorusAmount->load() * 0.01f,
+                        handles.airSize->load() * 0.01f,
+                        handles.airMix->load() * 0.01f,
+                        reverbRouted);
+        }
 
         renderAudition (buffer);
 
@@ -547,6 +592,7 @@ namespace keepsake
         state.setProperty (ids::audioName, embeddedAudioName, nullptr);
         state.setProperty (ids::audioRate, embeddedAudioRate, nullptr);
         state.setProperty (ids::audioTrimmed, embeddedAudioTrimmed, nullptr);
+        state.setProperty (ids::presetName, presetDisplayName, nullptr);
 
         // Binary rather than XML: the embedded audio is a multi-megabyte base64 blob,
         // and XML-escaping it on every host state poll is pure overhead. Binary also
@@ -600,10 +646,20 @@ namespace keepsake
         if (! tree.isValid() || tree.getType() != apvts.state.getType())
             return;
 
+        // A valid blob from an older build of the same state version (e.g. an
+        // M4-era session loading into an M5 build) simply lacks the newer
+        // parameters. replaceState handles that correctly in JUCE 8: a
+        // parameter with no child in the incoming tree gets a fresh child
+        // appended with no value property, and the childAdded listener then
+        // sets the parameter to its DEFAULT (not its stale current value).
+        // presets_missingParametersLoadAsDefaultsNotStaleValues pins that
+        // library behavior - if a JUCE upgrade changes it, defaults must be
+        // merged into the tree here before replaceState.
         embeddedAudioBase64  = tree.getProperty (ids::audioData, juce::String()).toString();
         embeddedAudioName    = tree.getProperty (ids::audioName, juce::String()).toString();
         embeddedAudioRate    = (double) tree.getProperty (ids::audioRate, 0.0);
         embeddedAudioTrimmed = (bool) tree.getProperty (ids::audioTrimmed, false);
+        presetDisplayName    = tree.getProperty (ids::presetName, juce::String()).toString();
 
         // The audio blob is not a parameter; strip it before handing the tree back to
         // the APVTS so it does not end up in the parameter state.
@@ -611,6 +667,7 @@ namespace keepsake
         tree.removeProperty (ids::audioName, nullptr);
         tree.removeProperty (ids::audioRate, nullptr);
         tree.removeProperty (ids::audioTrimmed, nullptr);
+        tree.removeProperty (ids::presetName, nullptr);
 
         apvts.replaceState (tree);
 
@@ -620,6 +677,51 @@ namespace keepsake
                                                     currentSampleRate);
 
         publishSource (restored, embeddedAudioName);
+    }
+
+    void KeepsakeProcessor::randomizeParameters (juce::int64 seed)
+    {
+        juce::Random rng (seed);
+        const auto& parameters = getParameters();
+
+        randomizeStash.clear();
+        randomizeStash.reserve ((size_t) parameters.size());
+
+        for (auto* p : parameters)
+            randomizeStash.push_back (p->getValue());
+
+        for (auto* p : parameters)
+        {
+            // Master output is excluded for ear protection (spec §3); the
+            // loaded audio is not a parameter, so it is excluded by
+            // construction. Everything else rolls.
+            if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (p))
+                if (ranged->paramID == juce::String (params::masterGain))
+                    continue;
+
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (rng.nextFloat());
+            p->endChangeGesture();
+        }
+    }
+
+    bool KeepsakeProcessor::undoRandomize()
+    {
+        const auto& parameters = getParameters();
+
+        if ((int) randomizeStash.size() != parameters.size())
+            return false; // nothing stashed
+
+        for (int i = 0; i < parameters.size(); ++i)
+        {
+            auto* p = parameters[i];
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (randomizeStash[(size_t) i]);
+            p->endChangeGesture();
+        }
+
+        randomizeStash.clear();
+        return true;
     }
 
     juce::AudioProcessorEditor* KeepsakeProcessor::createEditor()

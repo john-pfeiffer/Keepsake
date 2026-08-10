@@ -72,11 +72,13 @@ target_sources(Keepsake PRIVATE
         src/PluginProcessor.cpp
         src/PluginEditor.cpp
         src/Parameters.cpp
+        src/PresetManager.cpp
         src/engine/Analysis.cpp
         src/engine/CaptureBuffer.cpp
         src/engine/GrainEngine.cpp
         src/engine/ToneEngine.cpp
         src/engine/Voice.cpp
+        src/fx/FxChain.cpp
         src/ui/WaveformView.cpp
         src/ui/ControlPanels.cpp)
 

@@ -109,6 +109,7 @@ KTEST_CASE (processor_hasAllExpectedParametersExposedToTheHost)
         params::lfo1Shape, params::lfo1Rate, params::lfo1Sync, params::lfo1Division, params::lfo1Retrig,
         params::lfo2Shape, params::lfo2Rate, params::lfo2Sync, params::lfo2Division, params::lfo2Retrig,
         params::voiceMode, params::glideTime,
+        params::warmthAmount, params::chorusAmount, params::airSize, params::airMix,
         params::ampAttack, params::ampDecay, params::ampSustain, params::ampRelease,
         params::masterGain
     };
@@ -1070,6 +1071,574 @@ KTEST_CASE (processor_glideMovesPitchGradually)
     EXPECT_MSG (early < analysis::noteFrequencyHz (60),
                 "pitch jumped instantly to the target: " + juce::String (early, 1)
                     + " Hz right after the change (glide is dead)");
+}
+
+// =============================================================================
+// M5: FX chain (Warmth -> Chorus -> Air) and the per-voice reverb send
+// =============================================================================
+
+namespace
+{
+    float rmsOfWindow (const juce::AudioBuffer<float>& b, int start, int num)
+    {
+        double sum = 0.0;
+
+        for (int ch = 0; ch < b.getNumChannels(); ++ch)
+        {
+            const auto* d = b.getReadPointer (ch);
+
+            for (int i = start; i < start + num; ++i)
+                sum += (double) d[i] * d[i];
+        }
+
+        return (float) std::sqrt (sum / ((double) num * b.getNumChannels()));
+    }
+
+    /** Peak spectrum level within +-3 bins of the given frequency. */
+    float peakPowerNearHz (const std::vector<float>& spectrumDb, double hz, double sampleRate)
+    {
+        const auto fftSize = (int) spectrumDb.size() * 2;
+        const auto bin = (int) std::lround (hz / sampleRate * (double) fftSize);
+        auto peak = -300.0f;
+
+        for (int k = juce::jmax (0, bin - 3);
+             k <= juce::jmin ((int) spectrumDb.size() - 1, bin + 3); ++k)
+            peak = juce::jmax (peak, spectrumDb[(size_t) k]);
+
+        return peak;
+    }
+}
+
+KTEST_CASE (fx_warmthAddsHarmonicsWithoutChangingLevel)
+{
+    // "tanh w/ drive compensation" (spec §2.6): full Warmth must audibly
+    // saturate - odd harmonics appear - while staying a color control, not a
+    // volume control: steady-state RMS within +-3dB of the clean render. The
+    // makeup constants in FxChain.cpp are owned by this test.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 61440; // note-off at 40960; FFT fits before it
+
+    auto render = [&] (float warmthPercent)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+        // Root BEFORE extraction: cycle slicing uses it, and a wrong period
+        // bakes harmonics into the frames themselves (a -20dB-dirty baseline).
+        setParam (proc, params::rootNote, 57.0f); // source is a 220Hz sine = A2
+        proc.extractNow();
+        setParam (proc, params::focus, 1.0f);     // pure Tone: a clean baseline
+        setParam (proc, params::warmthAmount, warmthPercent);
+        return renderMidi (proc, { 57 }, numSamples, 512, sampleRate);
+    };
+
+    const auto clean = render (0.0f);
+    const auto warm = render (100.0f);
+
+    constexpr int steadyStart = 4800;
+    const auto cleanRms = rmsOfWindow (clean, steadyStart, 32768);
+    const auto warmRms = rmsOfWindow (warm, steadyStart, 32768);
+
+    EXPECT_TRUE (cleanRms > 0.01f);
+    EXPECT_TRUE (ktest::isFinite (warm));
+
+    const auto rmsShiftDb = juce::Decibels::gainToDecibels (warmRms / cleanRms);
+    EXPECT_MSG (std::abs (rmsShiftDb) < 3.0f,
+                "warmth is a volume control: " + juce::String (rmsShiftDb, 2) + " dB shift");
+
+    // Third harmonic (tanh is odd-symmetric), relative to the fundamental.
+    const auto cleanSpectrum = ktest::powerSpectrumDb (clean, steadyStart);
+    const auto warmSpectrum = ktest::powerSpectrumDb (warm, steadyStart);
+
+    const auto cleanH3 = peakPowerNearHz (cleanSpectrum, 660.0, sampleRate)
+                         - peakPowerNearHz (cleanSpectrum, 220.0, sampleRate);
+    const auto warmH3 = peakPowerNearHz (warmSpectrum, 660.0, sampleRate)
+                        - peakPowerNearHz (warmSpectrum, 220.0, sampleRate);
+
+    EXPECT_MSG (cleanH3 < -50.0f,
+                "clean baseline is already dirty: h3 at " + juce::String (cleanH3, 1) + " dB");
+    EXPECT_MSG (warmH3 > cleanH3 + 25.0f,
+                "full warmth adds no harmonics: h3 " + juce::String (warmH3, 1)
+                    + " dB vs clean " + juce::String (cleanH3, 1) + " dB");
+}
+
+KTEST_CASE (fx_chorusThickensWithoutChangingLevel)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 61440;
+
+    auto render = [&] (float chorusPercent)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::chorusAmount, chorusPercent);
+        return renderMidi (proc, { 60 }, numSamples, 512, sampleRate);
+    };
+
+    const auto dry = render (0.0f);
+    const auto wet = render (100.0f);
+
+    EXPECT_TRUE (ktest::isFinite (wet));
+
+    // The chorus must actually do something...
+    float worst = 0.0f;
+    for (int i = 0; i < numSamples; ++i)
+        worst = juce::jmax (worst, std::abs (dry.getSample (0, i) - wet.getSample (0, i)));
+
+    EXPECT_MSG (worst > 0.01f, "chorus at 100% changed nothing");
+
+    // ...without becoming a volume control (linear mix rule at mix 0.5).
+    constexpr int steadyStart = 4800;
+    const auto shiftDb = juce::Decibels::gainToDecibels (
+        rmsOfWindow (wet, steadyStart, 32768) / rmsOfWindow (dry, steadyStart, 32768));
+
+    EXPECT_MSG (std::abs (shiftDb) < 3.0f,
+                "chorus is a volume control: " + juce::String (shiftDb, 2) + " dB shift");
+
+    // And no clicks from engaging it.
+    EXPECT_TRUE (ktest::maxDiscontinuity (wet) < 0.25f);
+}
+
+KTEST_CASE (fx_airMixProducesADecayingTail)
+{
+    // Air is a send-return: the dry path is untouched, and the reverb tail
+    // rings after the amp envelope has fully released.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 192000; // 4s; note-off at 128000, dry dead ~160000
+
+    auto render = [&] (float mixPercent)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::airSize, 60.0f);
+        setParam (proc, params::airMix, mixPercent);
+        return renderMidi (proc, { 60 }, numSamples, 512, sampleRate);
+    };
+
+    const auto dry = render (0.0f);
+    const auto wet = render (70.0f);
+
+    EXPECT_TRUE (ktest::isFinite (wet));
+
+    // After the release tail (600ms default) is long gone, only the reverb rings.
+    const auto dryTail = rmsOfWindow (dry, 176000, 8000);
+    const auto wetTailEarly = rmsOfWindow (wet, 176000, 8000);
+    const auto wetTailLate = rmsOfWindow (wet, 184000, 8000);
+
+    EXPECT_MSG (dryTail < 1.0e-6f,
+                "dry render still sounding in the tail window: " + juce::String (dryTail, 9));
+    EXPECT_MSG (wetTailEarly > 1.0e-4f,
+                "no reverb tail: " + juce::String (wetTailEarly, 9));
+    EXPECT_MSG (wetTailLate < wetTailEarly,
+                "reverb tail is not decaying");
+}
+
+KTEST_CASE (fx_perVoiceReverbSendIsAudibleAtMixZero)
+{
+    // THE M4->M5 contract: the Reverb Mix mod destination is a per-voice wet
+    // send. With the Air Mix knob fully down, a Velocity->Reverb Mix routing
+    // must still put this voice into the reverb.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 192000;
+
+    auto render = [&] (bool routed)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::airSize, 60.0f); // Mix stays at default 0
+
+        if (routed)
+            setModSlot (proc, 0, 4 /*Velocity*/, 11 /*Reverb Mix*/, 100.0f);
+
+        return renderMidi (proc, { 60 }, numSamples, 512, sampleRate);
+    };
+
+    const auto unrouted = render (false);
+    const auto routed = render (true);
+
+    EXPECT_TRUE (ktest::isFinite (routed));
+
+    const auto unroutedTail = rmsOfWindow (unrouted, 176000, 8000);
+    const auto routedTail = rmsOfWindow (routed, 176000, 8000);
+
+    EXPECT_MSG (unroutedTail < 1.0e-6f,
+                "reverb sounding with nothing routed and Mix 0: " + juce::String (unroutedTail, 9));
+    EXPECT_MSG (routedTail > 1.0e-4f,
+                "per-voice send inaudible at Mix 0: " + juce::String (routedTail, 9));
+}
+
+KTEST_CASE (fx_closingTheMixKnobDoesNotCutTheTail)
+{
+    // Deactivation rings out: the reverb keeps processing until its own
+    // output decays, so automating Air Mix to zero never guillotines a tail.
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 375; // 4s
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, blockSize);
+    giveProcessorASource (proc, sampleRate);
+    setParam (proc, params::airSize, 70.0f);
+    setParam (proc, params::airMix, 70.0f);
+
+    juce::AudioBuffer<float> out (2, numBlocks * blockSize);
+    out.clear();
+    juce::AudioBuffer<float> block (2, blockSize);
+
+    constexpr int noteOffBlock = 180;  // ~1.9s: leave time for the amp release
+    constexpr int mixZeroBlock = 300;  // ~3.2s: dry long dead, tail ringing
+
+    for (int b = 0; b < numBlocks; ++b)
+    {
+        if (b == mixZeroBlock)
+            setParam (proc, params::airMix, 0.0f);
+
+        juce::MidiBuffer midi;
+
+        if (b == 0)
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, 0.8f), 0);
+
+        if (b == noteOffBlock)
+            midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+
+        block.clear();
+        proc.processBlock (block, midi);
+
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (ch, b * blockSize, block, ch, 0, blockSize);
+    }
+
+    EXPECT_TRUE (ktest::isFinite (out));
+
+    // The tail must survive the knob hitting zero...
+    const auto afterKnob = rmsOfWindow (out, (mixZeroBlock + 4) * blockSize, 8000);
+    EXPECT_MSG (afterKnob > 1.0e-5f,
+                "tail cut when Mix hit 0: " + juce::String (afterKnob, 9));
+
+    // ...and still decay rather than ring forever.
+    const auto muchLater = rmsOfWindow (out, (numBlocks - 16) * blockSize, 8000);
+    EXPECT_MSG (muchLater < afterKnob, "tail is not decaying after Mix closed");
+}
+
+KTEST_CASE (processor_blockSizeIndependentWithFxActive)
+{
+    // The whole FX chain - saturation crossfade, chorus, reverb send-return,
+    // per-voice sends - must preserve the bit-identical block-size guarantee.
+    // This is what the smoother-snapping discipline in FxChain::prepare buys.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 12288;
+
+    auto render = [&] (int blockSize)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        giveProcessorASource (proc, sampleRate);
+        proc.extractNow();
+        setParam (proc, params::focus, 0.5f);
+        setParam (proc, params::warmthAmount, 40.0f);
+        setParam (proc, params::chorusAmount, 60.0f);
+        setParam (proc, params::airSize, 50.0f);
+        setParam (proc, params::airMix, 40.0f);
+        setModSlot (proc, 0, 4 /*Velocity*/, 11 /*Reverb Mix*/, 80.0f);
+        return renderMidi (proc, { 60 }, numSamples, blockSize, sampleRate);
+    };
+
+    const auto a = render (64);
+    const auto b = render (1024);
+
+    EXPECT_TRUE (a.getMagnitude (0, numSamples) > 0.001f);
+
+    float worst = 0.0f;
+    for (int i = 0; i < numSamples; ++i)
+        worst = juce::jmax (worst, std::abs (a.getSample (0, i) - b.getSample (0, i)));
+
+    EXPECT_MSG (! (worst > 0.0f),
+                "FX-active render depends on block size: diff " + juce::String (worst, 8));
+}
+
+KTEST_CASE (fx_sweepingTheKnobsIsClickFree)
+{
+    // Automating Warmth/Chorus/Air Mix through zero and back must not click:
+    // the warmth crossfade is smoothed, the chorus cools down before its hard
+    // bypass, and the reverb rings out instead of cutting.
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 256;
+    constexpr int numBlocks = 375; // 2s
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, blockSize);
+    giveProcessorASource (proc, sampleRate);
+
+    juce::AudioBuffer<float> out (2, numBlocks * blockSize);
+    out.clear();
+    juce::AudioBuffer<float> block (2, blockSize);
+
+    for (int b = 0; b < numBlocks; ++b)
+    {
+        // 0 -> max -> 0 over the render, hitting exact zero at both ends.
+        const auto sweep = 100.0f * std::sin (juce::MathConstants<float>::pi
+                                              * (float) b / (float) numBlocks);
+        setParam (proc, params::warmthAmount, sweep);
+        setParam (proc, params::chorusAmount, sweep);
+        setParam (proc, params::airMix, sweep);
+
+        juce::MidiBuffer midi;
+
+        if (b == 0)
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, 0.8f), 0);
+
+        block.clear();
+        proc.processBlock (block, midi);
+
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (ch, b * blockSize, block, ch, 0, blockSize);
+    }
+
+    EXPECT_TRUE (ktest::isFinite (out));
+    EXPECT_TRUE (out.getMagnitude (0, out.getNumSamples()) > 0.001f);
+
+    const auto worstStep = ktest::maxDiscontinuity (out);
+    EXPECT_MSG (worstStep < 0.25f,
+                "FX sweep clicks: step " + juce::String (worstStep, 3));
+}
+
+// =============================================================================
+// M5: presets and Randomize
+// =============================================================================
+
+namespace
+{
+    /** A scratch preset directory, deleted on destruction. */
+    struct ScratchPresetDir
+    {
+        ScratchPresetDir()
+            : dir (juce::File::getSpecialLocation (juce::File::tempDirectory)
+                       .getChildFile ("keepsake-preset-tests")
+                       .getNonexistentSibling())
+        {
+            dir.createDirectory();
+        }
+
+        ~ScratchPresetDir() { dir.deleteRecursively(); }
+
+        juce::File dir;
+    };
+}
+
+KTEST_CASE (presets_saveAndLoadRoundTripIncludingTheKeepsake)
+{
+    constexpr double sampleRate = 48000.0;
+    ScratchPresetDir scratch;
+
+    // Author a patch with a source loaded and distinctive settings...
+    KeepsakeProcessor author;
+    author.prepareToPlay (sampleRate, 512);
+    giveProcessorASource (author, sampleRate);
+    setParam (author, params::focus, 0.7f);
+    setParam (author, params::warmthAmount, 33.0f);
+
+    PresetManager authorPresets (author, scratch.dir);
+    EXPECT_TRUE (authorPresets.savePreset ("My Moment"));
+    EXPECT_TRUE (authorPresets.getCurrentName() == "My Moment");
+    EXPECT_TRUE (author.getPresetDisplayName() == "My Moment");
+
+    // ...and load it into a fresh instance: parameters AND the embedded audio
+    // must arrive (spec §3: "Presets embed capture audio").
+    KeepsakeProcessor player;
+    player.prepareToPlay (sampleRate, 512);
+
+    PresetManager playerPresets (player, scratch.dir);
+    EXPECT_TRUE (playerPresets.getPresetNames().size() == 1);
+    EXPECT_TRUE (playerPresets.loadPreset ("My Moment"));
+
+    EXPECT_NEAR ((double) player.getState().getRawParameterValue (params::focus)->load(), 0.7, 1.0e-4);
+    EXPECT_NEAR ((double) player.getState().getRawParameterValue (params::warmthAmount)->load(), 33.0, 1.0e-3);
+    EXPECT_TRUE (player.getPresetDisplayName() == "My Moment");
+
+    const auto out = renderMidi (player, { 60 }, 12000, 512, sampleRate);
+    EXPECT_MSG (out.getMagnitude (0, out.getNumSamples()) > 0.001f,
+                "loaded preset does not play - embedded audio missing");
+}
+
+KTEST_CASE (presets_missingParametersLoadAsDefaultsNotStaleValues)
+{
+    // An older preset (same state version, fewer parameters - exactly what an
+    // M4-era session is) must load its missing parameters at their DEFAULTS.
+    // Without the default-merge in setStateInformation, replaceState leaves
+    // absent parameters at whatever they were before the load - stale state
+    // bleeding across preset switches.
+    constexpr double sampleRate = 48000.0;
+    ScratchPresetDir scratch;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, 512);
+    setParam (proc, params::focus, 0.7f);
+
+    // Craft the "old" blob: current state minus the warmthAmount child.
+    juce::MemoryBlock blob;
+    proc.getStateInformation (blob);
+
+    juce::ValueTree tree;
+    {
+        juce::MemoryInputStream in (blob.getData(), blob.getSize(), false);
+        in.readInt(); in.readInt(); in.readInt(); // magic/version/length
+        tree = juce::ValueTree::readFromStream (in);
+    }
+
+    auto child = tree.getChildWithProperty ("id", juce::String (params::warmthAmount));
+    EXPECT_TRUE (child.isValid());
+    tree.removeChild (child, nullptr);
+
+    juce::MemoryBlock oldBlob;
+    {
+        juce::MemoryOutputStream stream (oldBlob, false);
+        stream.writeInt ((int) KeepsakeProcessor::kStateMagic);
+        stream.writeInt (KeepsakeProcessor::kStateVersion);
+
+        juce::MemoryBlock payload;
+        {
+            juce::MemoryOutputStream payloadStream (payload, false);
+            tree.writeToStream (payloadStream);
+        }
+
+        stream.writeInt ((int) payload.getSize());
+        stream.write (payload.getData(), payload.getSize());
+    }
+
+    const auto file = scratch.dir.getChildFile (juce::String ("Old") + PresetManager::kExtension);
+    EXPECT_TRUE (file.replaceWithData (oldBlob.getData(), oldBlob.getSize()));
+
+    // Dirty the parameter the preset lacks, then load.
+    setParam (proc, params::warmthAmount, 80.0f);
+    setParam (proc, params::focus, 0.1f);
+
+    PresetManager presets (proc, scratch.dir);
+    EXPECT_TRUE (presets.loadPreset ("Old"));
+
+    EXPECT_NEAR ((double) proc.getState().getRawParameterValue (params::focus)->load(), 0.7, 1.0e-4);
+    EXPECT_MSG (proc.getState().getRawParameterValue (params::warmthAmount)->load() < 1.0e-6f,
+                "missing parameter kept its stale value instead of its default");
+}
+
+KTEST_CASE (presets_prevNextCycleThroughSortedNames)
+{
+    constexpr double sampleRate = 48000.0;
+    ScratchPresetDir scratch;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, 512);
+
+    PresetManager presets (proc, scratch.dir);
+    EXPECT_TRUE (! presets.loadNext()); // empty directory: nothing to step to
+
+    for (const auto* name : { "Beta", "Alpha", "Gamma" })
+        EXPECT_TRUE (presets.savePreset (name));
+
+    // Sorted order regardless of save order.
+    EXPECT_TRUE (presets.getPresetNames()[0] == "Alpha");
+    EXPECT_TRUE (presets.getPresetNames()[1] == "Beta");
+    EXPECT_TRUE (presets.getPresetNames()[2] == "Gamma");
+
+    // Save left us on Gamma; next wraps to the start.
+    EXPECT_TRUE (presets.loadNext());
+    EXPECT_TRUE (presets.getCurrentName() == "Alpha");
+    EXPECT_TRUE (presets.loadNext());
+    EXPECT_TRUE (presets.getCurrentName() == "Beta");
+    EXPECT_TRUE (presets.loadPrevious());
+    EXPECT_TRUE (presets.getCurrentName() == "Alpha");
+    EXPECT_TRUE (presets.loadPrevious()); // wraps backward
+    EXPECT_TRUE (presets.getCurrentName() == "Gamma");
+}
+
+KTEST_CASE (randomize_rollsEverythingExceptMasterGainAndUndoRestoresExactly)
+{
+    KeepsakeProcessor proc;
+
+    setParam (proc, params::masterGain, -12.0f);
+
+    // Remember every normalized value, then roll.
+    std::vector<float> before;
+    for (auto* p : proc.getParameters())
+        before.push_back (p->getValue());
+
+    proc.randomizeParameters (0x5eed);
+
+    const auto& parameters = proc.getParameters();
+    int changed = 0;
+
+    for (int i = 0; i < parameters.size(); ++i)
+    {
+        auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (parameters[i]);
+
+        if (ranged != nullptr && ranged->paramID == juce::String (params::masterGain))
+        {
+            EXPECT_MSG (juce::exactlyEqual (parameters[i]->getValue(), before[(size_t) i]),
+                        "master gain was randomized (ear protection)");
+            continue;
+        }
+
+        if (! juce::exactlyEqual (parameters[i]->getValue(), before[(size_t) i]))
+            ++changed;
+    }
+
+    // Choice parameters can roll their own value by chance; "almost all
+    // changed" is the honest assertion.
+    EXPECT_MSG (changed > parameters.size() * 3 / 4,
+                "randomize changed only " + juce::String (changed) + " of "
+                    + juce::String (parameters.size()) + " parameters");
+
+    // Undo restores every value (to within one convertFrom0to1 round trip -
+    // skewed ranges are not bit-exact through the parameter system), and a
+    // second undo has nothing.
+    EXPECT_TRUE (proc.undoRandomize());
+
+    for (int i = 0; i < parameters.size(); ++i)
+        EXPECT_MSG (std::abs (parameters[i]->getValue() - before[(size_t) i]) < 1.0e-6f,
+                    "undo failed to restore parameter " + juce::String (i));
+
+    EXPECT_TRUE (! proc.undoRandomize());
+}
+
+KTEST_CASE (randomize_isSafeDuringPlayback)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 256;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, blockSize);
+    giveProcessorASource (proc, sampleRate);
+    proc.extractNow();
+
+    juce::AudioBuffer<float> block (2, blockSize);
+    bool sounded = false;
+
+    for (int b = 0; b < 150; ++b)
+    {
+        if (b == 50)
+        {
+            proc.randomizeParameters (0xabc + b);
+            proc.extractNow(); // what the poller would do moments later
+        }
+
+        if (b == 100)
+            proc.undoRandomize();
+
+        juce::MidiBuffer midi;
+
+        if (b == 0)
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, 0.8f), 0);
+
+        block.clear();
+        proc.processBlock (block, midi);
+
+        EXPECT_TRUE (ktest::isFinite (block));
+        sounded = sounded || block.getMagnitude (0, blockSize) > 0.001f;
+    }
+
+    EXPECT_TRUE (sounded);
 }
 
 KTEST_CASE (processor_modWheelReachesTheMatrix)
