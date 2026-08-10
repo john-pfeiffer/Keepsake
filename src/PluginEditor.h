@@ -15,11 +15,12 @@ namespace keepsake
         asks for, rather than a retrofit.
     */
     class KeepsakeEditor : public juce::AudioProcessorEditor,
-                           public juce::FileDragAndDropTarget
+                           public juce::FileDragAndDropTarget,
+                           private juce::Timer
     {
     public:
         static constexpr int kDesignWidth = 900;
-        static constexpr int kDesignHeight = 540;
+        static constexpr int kDesignHeight = 700;
 
         explicit KeepsakeEditor (KeepsakeProcessor&);
         ~KeepsakeEditor() override;
@@ -80,6 +81,10 @@ namespace keepsake
             KnobPanel modPanel { "MOD MATRIX" };
             KnobPanel fxPanel { "FX  -  Warmth / Chorus / Air" };
         };
+
+        /** One-shot post-attach 1px resize nudge - forces Logic's AU
+            container to recompute its clickable region (KPT-1 mitigation). */
+        void timerCallback() override;
 
         KeepsakeProcessor& proc;
         Content content;

@@ -13,6 +13,11 @@ namespace keepsake
         proc.sourceChanged.addChangeListener (this);
         setWantsKeyboardFocus (false);
         startTimerHz (30); // playhead + parameter-driven bracket updates
+
+        // Hosts destroy and recreate the editor on window close/reopen; a
+        // fresh view must pull the already-loaded source rather than sit
+        // blank waiting for the NEXT sourceChanged broadcast (KPT-2).
+        refresh();
     }
 
     WaveformView::~WaveformView()

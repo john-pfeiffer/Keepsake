@@ -28,8 +28,81 @@ namespace keepsake
     void ParamKnob::resized()
     {
         auto r = getLocalBounds();
-        label.setBounds (r.removeFromTop (16));
+        label.setBounds (r.removeFromTop (14));
+
+        // The rotary gets ALL remaining height. The value box is dropped
+        // entirely in cells too short to fit both - overlapping text (the
+        // rc.1 layout) is worse than no box, and the tooltip still carries
+        // the exact value name.
+        const auto showBox = r.getHeight() >= 52;
+        slider.setTextBoxStyle (showBox ? juce::Slider::TextBoxBelow : juce::Slider::NoTextBox,
+                                false, juce::jmin (70, getWidth() - 6), 15);
         slider.setBounds (r);
+    }
+
+    // =========================================================================
+    // ParamChoice
+    // =========================================================================
+
+    ParamChoice::ParamChoice (juce::AudioProcessorValueTreeState& state,
+                              const juce::String& parameterID,
+                              const juce::String& humanName,
+                              const juce::String& tooltip)
+    {
+        // Items first, then attach: the attachment maps item indices to the
+        // parameter but does not populate the list itself.
+        if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (state.getParameter (parameterID)))
+            box.addItemList (choice->choices, 1);
+
+        box.setTooltip (tooltip);
+        addAndMakeVisible (box);
+
+        attachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+            state, parameterID, box);
+
+        label.setText (humanName, juce::dontSendNotification);
+        label.setJustificationType (juce::Justification::centred);
+        label.setInterceptsMouseClicks (false, false);
+        label.setTooltip (tooltip);
+        addAndMakeVisible (label);
+    }
+
+    void ParamChoice::resized()
+    {
+        auto r = getLocalBounds();
+        label.setBounds (r.removeFromTop (14));
+
+        auto row = r.withSizeKeepingCentre (juce::jmin (getWidth() - 4, 110),
+                                            juce::jmin (24, r.getHeight()));
+        box.setBounds (row);
+    }
+
+    // =========================================================================
+    // ParamToggle
+    // =========================================================================
+
+    ParamToggle::ParamToggle (juce::AudioProcessorValueTreeState& state,
+                              const juce::String& parameterID,
+                              const juce::String& humanName,
+                              const juce::String& tooltip)
+        : attachment (state, parameterID, button)
+    {
+        button.setTooltip (tooltip);
+        addAndMakeVisible (button);
+
+        label.setText (humanName, juce::dontSendNotification);
+        label.setJustificationType (juce::Justification::centred);
+        label.setInterceptsMouseClicks (false, false);
+        label.setTooltip (tooltip);
+        addAndMakeVisible (label);
+    }
+
+    void ParamToggle::resized()
+    {
+        auto r = getLocalBounds();
+        label.setBounds (r.removeFromTop (14));
+        button.setBounds (r.withSizeKeepingCentre (juce::jmin (getWidth() - 4, 28),
+                                                   juce::jmin (24, r.getHeight())));
     }
 
     // =========================================================================
@@ -38,10 +111,10 @@ namespace keepsake
 
     KnobPanel::KnobPanel (juce::String title) : panelTitle (std::move (title)) {}
 
-    void KnobPanel::addKnob (std::unique_ptr<ParamKnob> knob)
+    void KnobPanel::addKnob (std::unique_ptr<juce::Component> control)
     {
-        addAndMakeVisible (*knob);
-        knobs.push_back (std::move (knob));
+        addAndMakeVisible (*control);
+        knobs.push_back (std::move (control));
         resized();
     }
 

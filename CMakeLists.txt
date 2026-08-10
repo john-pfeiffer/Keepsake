@@ -122,7 +122,8 @@ if (KEEPSAKE_BUILD_TESTS)
             tests/GrainEngineTests.cpp
             tests/ToneEngineTests.cpp
             tests/RenderTests.cpp
-            tests/Benchmark.cpp)
+            tests/Benchmark.cpp
+            tests/UiSnapshot.cpp)
 
     target_include_directories(KeepsakeTests PRIVATE src tests)
 

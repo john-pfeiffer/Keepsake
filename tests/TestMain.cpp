@@ -2,7 +2,11 @@
 #include <juce_events/juce_events.h>
 #include <cstring>
 
-namespace ktest { void runBenchmark(); }
+namespace ktest
+{
+    void runBenchmark();
+    int runUiSnapshot (const juce::String& outputDir);
+}
 
 int main (int argc, char** argv)
 {
@@ -17,6 +21,11 @@ int main (int argc, char** argv)
             ktest::runBenchmark();
             return 0;
         }
+
+        // Dev-only: render the editor headlessly and write PNGs (see
+        // UiSnapshot.cpp). Run under xvfb on a headless machine.
+        if (std::strcmp (argv[i], "--ui-snapshot") == 0)
+            return ktest::runUiSnapshot (i + 1 < argc ? argv[i + 1] : "ui-snapshots");
     }
 
     return ktest::Registry::get().runAll();
