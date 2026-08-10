@@ -54,7 +54,7 @@ endif ()
 juce_add_plugin(Keepsake
         COMPANY_NAME "Elan Vital Studios"
         BUNDLE_ID "com.elanvitalstudios.keepsake"
-        PLUGIN_MANUFACTURER_CODE Evsy
+        PLUGIN_MANUFACTURER_CODE EVSR
         PLUGIN_CODE Kpsk
         FORMATS VST3 AU Standalone
         PRODUCT_NAME "Keepsake"
