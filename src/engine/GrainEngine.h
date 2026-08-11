@@ -57,6 +57,16 @@ namespace keepsake
             // (no jitter - the grid is the point), anchored to note-on via
             // reset(). 0 = free-running from densityPerSecond.
             double syncIntervalSamples = 0.0;
+
+            // Warp: when > 0, the grain read position sweeps once across the
+            // Keep window per 1/increment samples (note-anchored, looping).
+            // Pitch is untouched, so the sweep is a time-stretch. 0 = off.
+            double warpPhaseIncrement = 0.0;
+
+            // Snap: quantise each grain's start to the nearest detected
+            // transient inside the window; Drift becomes the probability of
+            // shuffling to a random in-window transient instead.
+            bool snapToTransients = false;
         };
 
         void prepare (double sampleRate);
@@ -93,6 +103,7 @@ namespace keepsake
         std::array<Grain, kMaxGrains> grains {};
         double currentSampleRate = 44100.0;
         double samplesUntilNextGrain = 0.0;
+        double warpPhase = 0.0; // 0..1 through the Keep window, note-anchored
         juce::Random rng { 0x5EED };
         int nextGrainSlot = 0;
         float normaliseGain = 1.0f;

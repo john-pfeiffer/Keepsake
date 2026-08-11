@@ -86,7 +86,8 @@ namespace keepsake
         void setPresetDisplayName (const juce::String& name) { presetDisplayName = name; }
 
         /** Spec §3 Randomize: every user-editable parameter except master
-            output (ear protection) and the loaded audio itself. Writes through
+            output (ear protection), Root/Fine (tuning), and the loaded audio
+            itself. Writes through
             the normal parameter system with gestures so hosts see the changes.
             Seeded so tests are deterministic; the UI passes a random seed. */
         void randomizeParameters (juce::int64 seed);

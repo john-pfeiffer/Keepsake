@@ -19,7 +19,8 @@ namespace keepsake
         prev.setTooltip ("Previous preset");
         next.setTooltip ("Next preset");
         save.setTooltip ("Save this sound - keepsake included - as a preset");
-        random.setTooltip ("Randomize every control except the output level and the loaded audio");
+        random.setTooltip ("Randomize every control except the output level, Root/Fine tuning "
+                           "and the loaded audio");
         back.setTooltip ("Undo the last Randomize");
         back.setEnabled (false);
 
@@ -125,17 +126,23 @@ namespace keepsake
         };
 
         // --- Keepsake (capture) ---------------------------------------------
-        rootPanel.setColumns (4); // one row: Place / Keep / Root / Fine
+        rootPanel.setColumns (6); // one row: Place / Keep / Warp / Snap / Root / Fine
         rootPanel.addKnob (knob (params::place, "Place",
                                  "Place - capture position through the source file. Automatable; "
                                  "small mod depths give subtle movement, large sweeps scan the whole file."));
         rootPanel.addKnob (knob (params::captureLength, "Keep",
                                  "Keep Length - length of the captured window, 10-500 ms."));
+        rootPanel.addKnob (choice (params::warpMode, "Warp",
+                                   "Sweeps the kept window over N bars at song tempo, restarting "
+                                   "each note. Pitch is unchanged - a tempo-mapped time-stretch."));
+        rootPanel.addKnob (toggle (params::grainSnap, "Snap",
+                                   "Grains start on detected hits in the source; "
+                                   "Drift shuffles which hit each grain takes."));
         rootPanel.addKnob (knob (params::rootNote, "Root",
                                  "Root - the pitch the source material is assumed to be. "
-                                 "Everything tracks from here."));
+                                 "Everything tracks from here. Excluded from Randomize."));
         rootPanel.addKnob (knob (params::rootCents, "Fine",
-                                 "Root Fine - root offset in cents."));
+                                 "Root Fine - root offset in cents. Excluded from Randomize."));
         addAndMakeVisible (rootPanel);
 
         // --- Cloud ----------------------------------------------------------

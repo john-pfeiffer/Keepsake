@@ -129,3 +129,89 @@ KTEST_CASE (sourceStore_publishAndRetireKeepsOldPointerAlive)
     EXPECT_TRUE (audioThreadView->name == "first");
     EXPECT_TRUE (store.getForMessageThread()->name == "second");
 }
+
+// =============================================================================
+// Transient detection (Warp/Snap groundwork)
+// =============================================================================
+
+namespace
+{
+    /** Decaying noise bursts at the given positions over a -60dB noise floor. */
+    juce::AudioBuffer<float> makeClickTrack (const std::vector<int>& positions,
+                                             int numSamples, double sampleRate)
+    {
+        juce::AudioBuffer<float> buffer (1, numSamples);
+        juce::Random rng (42);
+        auto* data = buffer.getWritePointer (0);
+
+        for (int i = 0; i < numSamples; ++i)
+            data[i] = (rng.nextFloat() * 2.0f - 1.0f) * 0.001f;
+
+        const auto burstLength = (int) (0.01 * sampleRate); // 10ms
+
+        for (auto pos : positions)
+            for (int i = 0; i < burstLength && pos + i < numSamples; ++i)
+            {
+                const auto decay = 1.0f - (float) i / (float) burstLength;
+                data[pos + i] += (rng.nextFloat() * 2.0f - 1.0f) * 0.8f * decay;
+            }
+
+        return buffer;
+    }
+}
+
+KTEST_CASE (transients_detectorFindsPlantedOnsets)
+{
+    constexpr double sampleRate = 48000.0;
+    const std::vector<int> planted = { 24000, 48000, 72000 };
+
+    const auto buffer = makeClickTrack (planted, 96000, sampleRate);
+    const auto found = detectTransients (buffer, sampleRate);
+
+    EXPECT_MSG ((int) found.size() == 3,
+                "expected 3 onsets, found " + juce::String ((int) found.size()));
+
+    // Each hit within 10ms of where it was planted, in order.
+    for (size_t i = 0; i < juce::jmin (found.size(), planted.size()); ++i)
+        EXPECT_MSG (std::abs (found[i] - planted[i]) <= 480,
+                    "onset " + juce::String ((int) i) + " at " + juce::String (found[i])
+                        + ", planted at " + juce::String (planted[i]));
+}
+
+KTEST_CASE (transients_silenceAndSteadyToneYieldNone)
+{
+    constexpr double sampleRate = 48000.0;
+
+    juce::AudioBuffer<float> silence (1, 48000);
+    silence.clear();
+    EXPECT_TRUE (detectTransients (silence, sampleRate).empty());
+
+    // A steady mid-file tone has no energy JUMP after its own attack - the
+    // detector must not pepper sustained material with false hits.
+    auto tone = ktest::makeSineSource (220.0, 1.0, sampleRate);
+    const auto found = detectTransients (tone->buffer, sampleRate);
+    EXPECT_MSG ((int) found.size() <= 1, // the attack itself may register
+                "steady tone produced " + juce::String ((int) found.size()) + " onsets");
+}
+
+KTEST_CASE (transients_importPathsPopulateTheSource)
+{
+    // decodeFromBase64 is the restore path every preset goes through - the
+    // detected hits must arrive with the source, in host-rate samples.
+    constexpr double sampleRate = 48000.0;
+    const std::vector<int> planted = { 12000, 36000 };
+
+    SourceAudio::Ptr original (new SourceAudio());
+    original->sampleRate = sampleRate;
+    original->name = "clicks";
+    original->buffer = makeClickTrack (planted, 48000, sampleRate);
+
+    CaptureIO io;
+    const auto encoded = CaptureIO::encodeToBase64 (*original);
+    auto restored = io.decodeFromBase64 (encoded, "clicks", sampleRate, sampleRate);
+
+    EXPECT_TRUE (restored != nullptr);
+    EXPECT_MSG ((int) restored->transients.size() == 2,
+                "restored source carries " + juce::String ((int) restored->transients.size())
+                    + " transients, expected 2");
+}

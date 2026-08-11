@@ -127,6 +127,21 @@ namespace keepsake::params
                                 "1/8.", "1/8", "1/8T", "1/16", "1/16T", "1/32" },
             7)); // 1/8
 
+        // Warp sweeps the grain read position across the Keep window over N
+        // bars (4/4 assumed), anchored to note-on; pitch is untouched, so it
+        // behaves as a time-stretch. Snap quantises grain starts to detected
+        // transients. Both lists are frozen ABI like every choice below.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { warpMode, 1 },
+            "Warp",
+            juce::StringArray { "Off", "1/4 Bar", "1/2 Bar", "1 Bar", "2 Bars", "4 Bars" },
+            0));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { grainSnap, 1 },
+            "Snap",
+            juce::StringArray { "Off", "Transients" },
+            0));
+
         // --- Tone -----------------------------------------------------------
         // Focus defaults to full Cloud so the plugin sounds exactly like M2 out of
         // the box. In M3 this is a plain equal-power blend; M4 adds the coupling.
@@ -264,6 +279,8 @@ namespace keepsake::params
         grainSpread   = state.getRawParameterValue (params::grainSpread);
         grainSync     = state.getRawParameterValue (params::grainSync);
         grainDivision = state.getRawParameterValue (params::grainDivision);
+        warpMode  = state.getRawParameterValue (params::warpMode);
+        grainSnap = state.getRawParameterValue (params::grainSnap);
         focus         = state.getRawParameterValue (params::focus);
         toneFrame     = state.getRawParameterValue (params::toneFrame);
         toneFrames    = state.getRawParameterValue (params::toneFrames);

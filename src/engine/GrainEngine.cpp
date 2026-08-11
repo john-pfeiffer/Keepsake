@@ -1,5 +1,7 @@
 #include "GrainEngine.h"
 
+#include <algorithm>
+
 namespace keepsake
 {
     // =========================================================================
@@ -90,6 +92,7 @@ namespace keepsake
             g.active = false;
 
         samplesUntilNextGrain = 0.0;
+        warpPhase = 0.0; // the sweep is note-anchored, like the sync grid
         nextGrainSlot = 0;
         normaliseInitialised = false; // next note snaps to the right level immediately
     }
@@ -145,9 +148,53 @@ namespace keepsake
         lengthSamples = juce::jmin (lengthSamples, (double) windowLength);
         lengthSamples = juce::jmax (2.0, lengthSamples);
 
-        // Drift jitters the grain start within the capture window.
-        const auto jitterRange = s.drift * (double) juce::jmax (0, windowLength - (int) lengthSamples);
-        const auto jitter = jitterRange * rng.nextDouble();
+        const auto positionSpan = (double) juce::jmax (0, windowLength - (int) lengthSamples);
+        double readStart;
+
+        if (s.warpPhaseIncrement > 0.0)
+        {
+            // Warp: the start follows the note-anchored sweep through the
+            // window; Drift becomes symmetric jitter around that moving point.
+            const auto base = (double) windowStart + warpPhase * positionSpan;
+            const auto jitter = (rng.nextDouble() * 2.0 - 1.0) * s.drift * 0.5 * (double) windowLength;
+            readStart = juce::jlimit ((double) windowStart, (double) windowStart + positionSpan, base + jitter);
+        }
+        else
+        {
+            // Drift jitters the grain start within the capture window.
+            readStart = (double) windowStart + s.drift * positionSpan * rng.nextDouble();
+        }
+
+        if (s.snapToTransients && ! source.transients.empty())
+        {
+            // Quantise to the detected hits inside the window. Drift doubles
+            // as the probability of shuffling to a random hit instead of the
+            // nearest - at full Drift, Snap is a slice shuffler.
+            const auto& hits = source.transients;
+            const auto first = std::lower_bound (hits.begin(), hits.end(), windowStart);
+            const auto last = std::lower_bound (first, hits.end(), windowStart + windowLength);
+
+            if (first != last)
+            {
+                const auto count = (int) std::distance (first, last);
+
+                if (count > 1 && rng.nextDouble() < s.drift)
+                {
+                    readStart = (double) *(first + rng.nextInt (count));
+                }
+                else
+                {
+                    auto it = std::lower_bound (first, last, (int) readStart);
+
+                    if (it == last)
+                        --it;
+                    else if (it != first && readStart - (double) *(it - 1) < (double) *it - readStart)
+                        --it;
+
+                    readStart = (double) *it;
+                }
+            }
+        }
 
         double rate = s.playbackRatio;
 
@@ -164,7 +211,7 @@ namespace keepsake
         }
 
         g.active = true;
-        g.readPos = (double) windowStart + jitter;
+        g.readPos = readStart;
         g.rate = rate;
         g.age = 0.0;
         g.length = lengthSamples;
@@ -175,8 +222,6 @@ namespace keepsake
         const auto angle = (pan * 0.5 + 0.5) * juce::MathConstants<double>::halfPi;
         g.gainL = (float) std::cos (angle);
         g.gainR = (float) std::sin (angle);
-
-        juce::ignoreUnused (source);
     }
 
     void GrainEngine::process (juce::AudioBuffer<float>& output,
@@ -241,6 +286,13 @@ namespace keepsake
             }
 
             samplesUntilNextGrain -= 1.0;
+
+            // Advanced every sample (not just at spawns) so chunked process()
+            // calls accumulate identically - block-size independence.
+            warpPhase += settings.warpPhaseIncrement;
+
+            if (warpPhase >= 1.0)
+                warpPhase -= std::floor (warpPhase);
 
             float sumL = 0.0f;
             float sumR = 0.0f;
