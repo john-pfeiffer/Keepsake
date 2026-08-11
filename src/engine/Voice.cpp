@@ -377,6 +377,21 @@ namespace keepsake
                                           * (double) coupling::grainSizeMultiplier (focus);
         cloudSettings.densityPerSecond = (double) modded (mod::destDensity, params.grainDensity, snapshot.density)
                                           * (double) coupling::densityMultiplier (focus);
+
+        // Tempo-synced emission: the division grid replaces Density outright,
+        // and the focus density-coupling is deliberately NOT applied - a
+        // rhythm must not double mid-morph (focus still couples grain size).
+        // Reuses the LFOs' frozen division list + sync math.
+        if (params.grainSync->load() >= 0.5f)
+        {
+            const auto bpm = blockContext.bpm.load (std::memory_order_relaxed);
+            const auto division = (int) std::lround (params.grainDivision->load());
+            cloudSettings.syncIntervalSamples = sampleRate / LFO::syncedRateHz (bpm, division);
+        }
+        else
+        {
+            cloudSettings.syncIntervalSamples = 0.0;
+        }
         cloudSettings.drift           = (double) modded (mod::destDrift, params.grainDrift, snapshot.drift) * 0.01;
         cloudSettings.shimmerCents    = (double) modded (mod::destShimmer, params.grainShimmer, snapshot.shimmer)
                                           * (double) coupling::shimmerMultiplier (focus);

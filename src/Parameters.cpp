@@ -112,6 +112,21 @@ namespace keepsake::params
         layout.add (makeFloat (grainWindow, "Window", Range (0.0f, 1.0f), 0.0f, "", 2));
         layout.add (makeFloat (grainSpread, "Spread", Range (0.0f, 100.0f), 40.0f, " %", 1));
 
+        // Tempo-synced grain emission: grains pulse at a musical division,
+        // anchored to note-on (the division list is the LFOs' frozen 12-entry
+        // list - shared ABI, shared math).
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { grainSync, 1 },
+            "Grain Sync",
+            juce::StringArray { "Free", "Sync" },
+            0));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { grainDivision, 1 },
+            "Grain Division",
+            juce::StringArray { "1/1", "1/2", "1/2T", "1/4.", "1/4", "1/4T",
+                                "1/8.", "1/8", "1/8T", "1/16", "1/16T", "1/32" },
+            7)); // 1/8
+
         // --- Tone -----------------------------------------------------------
         // Focus defaults to full Cloud so the plugin sounds exactly like M2 out of
         // the box. In M3 this is a plain equal-power blend; M4 adds the coupling.
@@ -247,6 +262,8 @@ namespace keepsake::params
         grainShimmer  = state.getRawParameterValue (params::grainShimmer);
         grainWindow   = state.getRawParameterValue (params::grainWindow);
         grainSpread   = state.getRawParameterValue (params::grainSpread);
+        grainSync     = state.getRawParameterValue (params::grainSync);
+        grainDivision = state.getRawParameterValue (params::grainDivision);
         focus         = state.getRawParameterValue (params::focus);
         toneFrame     = state.getRawParameterValue (params::toneFrame);
         toneFrames    = state.getRawParameterValue (params::toneFrames);

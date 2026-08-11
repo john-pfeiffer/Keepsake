@@ -139,11 +139,16 @@ namespace keepsake
         addAndMakeVisible (rootPanel);
 
         // --- Cloud ----------------------------------------------------------
-        cloudPanel.setColumns (6); // one full-width row
+        cloudPanel.setColumns (8); // one full-width row incl. Sync + Div
         cloudPanel.addKnob (knob (params::grainSize, "Size",
                                   "Grain Size - 5-250 ms, clamped to the kept window."));
         cloudPanel.addKnob (knob (params::grainDensity, "Density",
-                                  "Density - grains per second."));
+                                  "Density - grains per second (Free mode; ignored when Sync is on)."));
+        cloudPanel.addKnob (toggle (params::grainSync, "Sync",
+                                    "On: grains pulse at the Div division, locked to tempo and "
+                                    "anchored to each note. Density is ignored while synced."));
+        cloudPanel.addKnob (choice (params::grainDivision, "Div",
+                                    "Musical division for synced grain emission."));
         cloudPanel.addKnob (knob (params::grainDrift, "Drift",
                                   "Position jitter - randomises each grain's start within the kept window."));
         cloudPanel.addKnob (knob (params::grainShimmer, "Shimmer",
@@ -333,7 +338,13 @@ namespace keepsake
 
     void KeepsakeEditor::timerCallback()
     {
-        stopTimer();
+        // Logic/Tahoe workaround, PERIODIC by necessity: the AU container
+        // wedges its event routing over time (user-confirmed: focus-cycling
+        // to another app and back restores clicks), so the click region is
+        // re-cleared every few seconds, not just once at open. Never during
+        // a drag. Delete this whole method when Apple fixes the container.
+        if (juce::Component::isMouseButtonDownAnywhere())
+            return;
 
         // Downward, so the constrainer's maximum can never clamp this into a
         // no-op; the minimum is well below the default size.
@@ -341,6 +352,8 @@ namespace keepsake
         const auto h = getHeight();
         setSize (w - 1, h);
         setSize (w, h);
+
+        startTimer (4000); // first fire comes 50ms after open, then every 4s
     }
 
     void KeepsakeEditor::paint (juce::Graphics& g)

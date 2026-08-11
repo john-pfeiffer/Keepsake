@@ -103,6 +103,7 @@ KTEST_CASE (processor_hasAllExpectedParametersExposedToTheHost)
         params::place, params::captureLength, params::rootNote, params::rootCents,
         params::grainSize, params::grainDensity, params::grainDrift, params::grainShimmer,
         params::grainWindow, params::grainSpread,
+        params::grainSync, params::grainDivision,
         params::focus, params::toneFrame, params::toneFrames, params::toneFrameWrap,
         params::filterType, params::filterCutoff, params::filterResonance, params::filterKeytrack,
         params::env2Attack, params::env2Decay, params::env2Sustain, params::env2Release,
@@ -1639,6 +1640,187 @@ KTEST_CASE (randomize_isSafeDuringPlayback)
     }
 
     EXPECT_TRUE (sounded);
+}
+
+// =============================================================================
+// Tempo-synced grain emission
+// =============================================================================
+
+namespace
+{
+    /** Median spacing between amplitude-envelope peaks, in samples. */
+    double medianPeakSpacing (const juce::AudioBuffer<float>& buffer,
+                              int start, int end, int frameSize)
+    {
+        // Coarse rectified envelope, then local maxima above half the global max.
+        std::vector<float> envelope;
+
+        for (int pos = start; pos + frameSize <= end; pos += frameSize)
+        {
+            float peak = 0.0f;
+            const auto* d = buffer.getReadPointer (0);
+
+            for (int i = pos; i < pos + frameSize; ++i)
+                peak = juce::jmax (peak, std::abs (d[i]));
+
+            envelope.push_back (peak);
+        }
+
+        const auto globalMax = *std::max_element (envelope.begin(), envelope.end());
+        const auto threshold = globalMax * 0.5f;
+
+        std::vector<double> onsets;
+        bool above = false;
+
+        for (size_t i = 0; i < envelope.size(); ++i)
+        {
+            if (! above && envelope[i] > threshold)
+            {
+                onsets.push_back ((double) start + (double) i * frameSize);
+                above = true;
+            }
+            else if (above && envelope[i] < threshold * 0.5f)
+            {
+                above = false;
+            }
+        }
+
+        if (onsets.size() < 3)
+            return 0.0;
+
+        std::vector<double> gaps;
+        for (size_t i = 1; i < onsets.size(); ++i)
+            gaps.push_back (onsets[i] - onsets[i - 1]);
+
+        std::sort (gaps.begin(), gaps.end());
+        return gaps[gaps.size() / 2];
+    }
+
+    /** Largest deviation of any peak gap from the median - a jittered train
+        has the same MEDIAN as an exact grid; this is what tells them apart. */
+    double worstPeakGapDeviation (const juce::AudioBuffer<float>& buffer,
+                                  int start, int end, int frameSize)
+    {
+        const auto median = medianPeakSpacing (buffer, start, end, frameSize);
+
+        // Recompute the onsets the same way and compare every gap.
+        std::vector<float> envelope;
+
+        for (int pos = start; pos + frameSize <= end; pos += frameSize)
+        {
+            float peak = 0.0f;
+            const auto* d = buffer.getReadPointer (0);
+
+            for (int i = pos; i < pos + frameSize; ++i)
+                peak = juce::jmax (peak, std::abs (d[i]));
+
+            envelope.push_back (peak);
+        }
+
+        const auto globalMax = *std::max_element (envelope.begin(), envelope.end());
+        const auto threshold = globalMax * 0.5f;
+
+        std::vector<double> onsets;
+        bool above = false;
+
+        for (size_t i = 0; i < envelope.size(); ++i)
+        {
+            if (! above && envelope[i] > threshold)
+            {
+                onsets.push_back ((double) start + (double) i * frameSize);
+                above = true;
+            }
+            else if (above && envelope[i] < threshold * 0.5f)
+            {
+                above = false;
+            }
+        }
+
+        double worst = 0.0;
+        for (size_t i = 1; i < onsets.size(); ++i)
+            worst = juce::jmax (worst, std::abs ((onsets[i] - onsets[i - 1]) - median));
+
+        return worst;
+    }
+}
+
+KTEST_CASE (grains_syncedEmissionPulsesOnTheBeat)
+{
+    // Sync on, 1/8 at the harness's deterministic 120 BPM fallback: grains
+    // must pulse every 0.25s = 12000 samples at 48k, anchored to note-on.
+    // Short grains with silence between pulses make the grid measurable.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 144000; // 3s
+
+    auto render = [&] (bool synced)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::grainSize, 20.0f);
+        setParam (proc, params::grainDrift, 0.0f);
+
+        if (synced)
+        {
+            setParam (proc, params::grainSync, 1.0f);
+            setParam (proc, params::grainDivision, 7.0f); // 1/8
+        }
+
+        return renderMidi (proc, { 60 }, numSamples, 512, sampleRate);
+    };
+
+    const auto pulsed = render (true);
+    EXPECT_TRUE (ktest::isFinite (pulsed));
+
+    // Steady-state region only (skip attack, stop before the note-off).
+    const auto spacing = medianPeakSpacing (pulsed, 24000, 90000, 480);
+    EXPECT_MSG (std::abs (spacing - 12000.0) < 600.0,
+                "synced grains not on the 1/8 grid: median spacing "
+                    + juce::String (spacing, 1) + " samples (expected ~12000)");
+
+    // The grid must be EXACT, not merely correct on average - a jittered
+    // train shares the median but not the regularity (onsets are quantized
+    // to the 480-sample analysis frames; two frames of slack).
+    const auto deviation = worstPeakGapDeviation (pulsed, 24000, 90000, 480);
+    EXPECT_MSG (deviation <= 960.0,
+                "synced grain grid is irregular: worst gap deviation "
+                    + juce::String (deviation, 1) + " samples");
+
+    // Negative control: free mode at default density (24/s, jittered) must
+    // NOT show the 1/8 grid - proves the detector distinguishes the modes.
+    const auto free_ = render (false);
+    const auto freeSpacing = medianPeakSpacing (free_, 24000, 90000, 480);
+    EXPECT_MSG (std::abs (freeSpacing - 12000.0) > 600.0,
+                "free-mode render looks identical to the synced grid: spacing "
+                    + juce::String (freeSpacing, 1));
+}
+
+KTEST_CASE (processor_blockSizeIndependentWithSyncedGrains)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 12288;
+
+    auto render = [&] (int blockSize)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::grainSync, 1.0f);
+        setParam (proc, params::grainDivision, 9.0f); // 1/16
+        return renderMidi (proc, { 60 }, numSamples, blockSize, sampleRate);
+    };
+
+    const auto a = render (64);
+    const auto b = render (1024);
+
+    EXPECT_TRUE (a.getMagnitude (0, numSamples) > 0.001f);
+
+    float worst = 0.0f;
+    for (int i = 0; i < numSamples; ++i)
+        worst = juce::jmax (worst, std::abs (a.getSample (0, i) - b.getSample (0, i)));
+
+    EXPECT_MSG (! (worst > 0.0f),
+                "synced-grain render depends on block size: diff " + juce::String (worst, 8));
 }
 
 KTEST_CASE (processor_modWheelReachesTheMatrix)

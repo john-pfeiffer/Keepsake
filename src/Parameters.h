@@ -30,6 +30,8 @@ namespace keepsake::params
     inline constexpr auto grainShimmer = "grainShimmer"; // 0..100 cents
     inline constexpr auto grainWindow  = "grainWindow";  // 0..1 Hann->Tukey->Expodec
     inline constexpr auto grainSpread  = "grainSpread";  // 0..100 %
+    inline constexpr auto grainSync     = "grainSync";     // choice: Free/Sync
+    inline constexpr auto grainDivision = "grainDivision"; // frozen 12-entry list
 
     // --- Tone (wavetable) engine --------------------------------------------
     inline constexpr auto focus         = "focus";         // 0..1 Cloud->Tone
@@ -112,6 +114,8 @@ namespace keepsake::params
         std::atomic<float>* grainShimmer = nullptr;
         std::atomic<float>* grainWindow  = nullptr;
         std::atomic<float>* grainSpread  = nullptr;
+        std::atomic<float>* grainSync     = nullptr;
+        std::atomic<float>* grainDivision = nullptr;
         std::atomic<float>* focus         = nullptr;
         std::atomic<float>* toneFrame     = nullptr;
         std::atomic<float>* toneFrames    = nullptr; // choice index 0..3 -> {2,4,8,16}
