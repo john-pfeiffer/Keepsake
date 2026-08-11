@@ -1,4 +1,5 @@
 #include "PresetManager.h"
+#include "FactoryPresets.h"
 #include "PluginProcessor.h"
 
 namespace keepsake
@@ -23,14 +24,51 @@ namespace keepsake
 
         names.clear();
 
+        // Factory presets lead the list in their authored order - they are a
+        // curated sequence, not an alphabetical one.
+        for (const auto& preset : factory::getPresets())
+            names.add (preset.name);
+
+        numFactory = names.size();
+
+        juce::StringArray userNames;
+
         for (const auto& file : directory.findChildFiles (juce::File::findFiles, false,
                                                           juce::String ("*") + kExtension))
-            names.add (file.getFileNameWithoutExtension());
+            userNames.add (file.getFileNameWithoutExtension());
 
-        names.sortNatural();
+        userNames.sortNatural();
+        names.addArray (userNames);
 
         // Keep pointing at the same preset if it survived the rescan.
         currentIndex = names.indexOf (currentName);
+    }
+
+    bool PresetManager::applyFactoryPreset (int factoryIndex)
+    {
+        const auto& presets = factory::getPresets();
+
+        if (! juce::isPositiveAndBelow (factoryIndex, (int) presets.size()))
+            return false;
+
+        const auto& preset = presets[(size_t) factoryIndex];
+
+        // Same contract a user preset gets: everything the preset does not
+        // name returns to its default, so nothing bleeds across a switch.
+        for (auto* p : processor.getParameters())
+            if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (p))
+                ranged->setValueNotifyingHost (ranged->getDefaultValue());
+
+        auto& state = processor.getState();
+
+        for (const auto& [id, plainValue] : preset.values)
+            if (auto* p = state.getParameter (id))
+                p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
+
+        // Note what is NOT here: no setStateInformation, no publishSource. The
+        // loaded keepsake survives, which is the whole point of these.
+        processor.setPresetDisplayName (preset.name);
+        return true;
     }
 
     juce::String PresetManager::getCurrentName() const
@@ -69,6 +107,15 @@ namespace keepsake
     {
         if (! juce::isPositiveAndBelow (index, names.size()))
             return false;
+
+        if (index < numFactory)
+        {
+            if (! applyFactoryPreset (index))
+                return false;
+
+            currentIndex = index;
+            return true;
+        }
 
         juce::MemoryBlock state;
         const auto file = directory.getChildFile (names[index] + kExtension);

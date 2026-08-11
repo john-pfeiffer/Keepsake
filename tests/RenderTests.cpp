@@ -1451,8 +1451,9 @@ KTEST_CASE (presets_saveAndLoadRoundTripIncludingTheKeepsake)
     player.prepareToPlay (sampleRate, 512);
 
     PresetManager playerPresets (player, scratch.dir);
-    EXPECT_TRUE (playerPresets.getPresetNames().size() == 1);
-    EXPECT_TRUE (playerPresets.loadPreset ("My Moment"));
+    EXPECT_TRUE (playerPresets.getPresetNames().size()
+                     == playerPresets.getNumFactoryPresets() + 1);
+    EXPECT_TRUE (playerPresets.loadPreset (juce::String ("My Moment")));
 
     EXPECT_NEAR ((double) player.getState().getRawParameterValue (params::focus)->load(), 0.7, 1.0e-4);
     EXPECT_NEAR ((double) player.getState().getRawParameterValue (params::warmthAmount)->load(), 33.0, 1.0e-3);
@@ -1532,25 +1533,73 @@ KTEST_CASE (presets_prevNextCycleThroughSortedNames)
     proc.prepareToPlay (sampleRate, 512);
 
     PresetManager presets (proc, scratch.dir);
-    EXPECT_TRUE (! presets.loadNext()); // empty directory: nothing to step to
+
+    // The factory presets always lead the list; user presets follow them.
+    const auto factoryCount = presets.getNumFactoryPresets();
+    EXPECT_TRUE (factoryCount > 0);
+    EXPECT_TRUE (presets.getPresetNames().size() == factoryCount);
 
     for (const auto* name : { "Beta", "Alpha", "Gamma" })
         EXPECT_TRUE (presets.savePreset (name));
 
-    // Sorted order regardless of save order.
-    EXPECT_TRUE (presets.getPresetNames()[0] == "Alpha");
-    EXPECT_TRUE (presets.getPresetNames()[1] == "Beta");
-    EXPECT_TRUE (presets.getPresetNames()[2] == "Gamma");
+    // Sorted order regardless of save order, after the factory block.
+    EXPECT_TRUE (presets.getPresetNames()[factoryCount + 0] == "Alpha");
+    EXPECT_TRUE (presets.getPresetNames()[factoryCount + 1] == "Beta");
+    EXPECT_TRUE (presets.getPresetNames()[factoryCount + 2] == "Gamma");
 
-    // Save left us on Gamma; next wraps to the start.
+    // Save left us on Gamma, the last entry; next wraps to the first factory
+    // preset, and previous from there wraps back onto the user block.
     EXPECT_TRUE (presets.loadNext());
-    EXPECT_TRUE (presets.getCurrentName() == "Alpha");
+    EXPECT_TRUE (presets.getCurrentName() == presets.getPresetNames()[0]);
+    EXPECT_TRUE (presets.loadPrevious());
+    EXPECT_TRUE (presets.getCurrentName() == "Gamma");
+
+    // Stepping inside the user block still walks the sorted names.
+    EXPECT_TRUE (presets.loadPreset (juce::String ("Alpha")));
     EXPECT_TRUE (presets.loadNext());
     EXPECT_TRUE (presets.getCurrentName() == "Beta");
     EXPECT_TRUE (presets.loadPrevious());
     EXPECT_TRUE (presets.getCurrentName() == "Alpha");
-    EXPECT_TRUE (presets.loadPrevious()); // wraps backward
-    EXPECT_TRUE (presets.getCurrentName() == "Gamma");
+}
+
+KTEST_CASE (presets_factoryPresetsApplyWithoutTouchingTheKeepsake)
+{
+    // A factory preset is a sound design for the sample you already have -
+    // picking one must never republish (or clear) the loaded keepsake.
+    constexpr double sampleRate = 48000.0;
+    ScratchPresetDir scratch;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, 512);
+    giveProcessorASource (proc, sampleRate);
+    EXPECT_TRUE (proc.getSourceStore().hasSource());
+
+    PresetManager presets (proc, scratch.dir);
+    EXPECT_TRUE (presets.loadPreset (juce::String ("Formant Pad")));
+
+    EXPECT_MSG (proc.getSourceStore().hasSource(),
+                "a factory preset wiped the loaded keepsake");
+    EXPECT_TRUE (proc.getPresetDisplayName() == "Formant Pad");
+
+    // ...and it really did apply: Formant Pad turns on Formant mode.
+    EXPECT_TRUE (proc.getState().getParameter (params::pitchMode)->getValue() > 0.5f);
+}
+
+KTEST_CASE (presets_factoryPresetsResetWhatTheyDoNotName)
+{
+    // Switching presets must not inherit stray values from the previous sound,
+    // the same guarantee a user preset gets from setStateInformation.
+    ScratchPresetDir scratch;
+
+    KeepsakeProcessor proc;
+    setParam (proc, params::rootCents, 33.0f); // named by no factory preset
+
+    PresetManager presets (proc, scratch.dir);
+    EXPECT_TRUE (presets.loadPreset (juce::String ("Frozen Bloom")));
+
+    auto* cents = proc.getState().getParameter (params::rootCents);
+    EXPECT_MSG (std::abs (cents->getValue() - cents->getDefaultValue()) < 1.0e-6f,
+                "a parameter the preset does not name kept its stale value");
 }
 
 KTEST_CASE (randomize_rollsEverythingExceptMasterGainAndUndoRestoresExactly)
