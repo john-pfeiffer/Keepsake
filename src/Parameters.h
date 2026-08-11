@@ -17,7 +17,13 @@ namespace keepsake::params
 {
     // --- Capture ------------------------------------------------------------
     inline constexpr auto place        = "place";         // 0..1 through the source file
-    inline constexpr auto captureLength = "captureLength"; // 10..500 ms
+    inline constexpr auto captureLength = "captureLength"; // 10 ms..10 s
+
+    // Keep-window length bounds, shared by the parameter range and the
+    // waveform bracket drag so they cannot drift apart. The 10s ceiling gives
+    // Warp a full 4-bar phrase at 120 BPM to sweep.
+    inline constexpr float kKeepLengthMinMs = 10.0f;
+    inline constexpr float kKeepLengthMaxMs = 10000.0f;
 
     // --- Root (drives Cloud repitch, and Tone cycle extraction in M3) --------
     inline constexpr auto rootNote  = "rootNote";  // MIDI note number
@@ -32,6 +38,13 @@ namespace keepsake::params
     inline constexpr auto grainSpread  = "grainSpread";  // 0..100 %
     inline constexpr auto grainSync     = "grainSync";     // choice: Free/Sync
     inline constexpr auto grainDivision = "grainDivision"; // frozen 12-entry list
+
+    // --- Warp / Snap (tempo-mapped Keep window, transient slicing) ----------
+    inline constexpr auto warpMode  = "warpMode";  // choice: Off..4 Bars (frozen)
+    inline constexpr auto grainSnap = "grainSnap"; // choice: Off/Transients
+
+    // --- Cloud pitch behaviour ----------------------------------------------
+    inline constexpr auto pitchMode = "pitchMode"; // choice: Repitch/Formant
 
     // --- Tone (wavetable) engine --------------------------------------------
     inline constexpr auto focus         = "focus";         // 0..1 Cloud->Tone
@@ -116,6 +129,9 @@ namespace keepsake::params
         std::atomic<float>* grainSpread  = nullptr;
         std::atomic<float>* grainSync     = nullptr;
         std::atomic<float>* grainDivision = nullptr;
+        std::atomic<float>* warpMode  = nullptr; // choice index into the bars table
+        std::atomic<float>* grainSnap = nullptr; // 0 Off, 1 Transients
+        std::atomic<float>* pitchMode = nullptr; // 0 Repitch, 1 Formant
         std::atomic<float>* focus         = nullptr;
         std::atomic<float>* toneFrame     = nullptr;
         std::atomic<float>* toneFrames    = nullptr; // choice index 0..3 -> {2,4,8,16}

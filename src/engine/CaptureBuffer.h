@@ -20,6 +20,11 @@ namespace keepsake
         double sampleRate = 44100.0;
         juce::String name;
 
+        /** Onset positions in samples, ascending - computed once at
+            import/restore (never on the audio thread) and immutable after
+            publication, so grain snapping can read it lock-free. */
+        std::vector<int> transients;
+
         int getNumSamples() const noexcept  { return buffer.getNumSamples(); }
         int getNumChannels() const noexcept { return buffer.getNumChannels(); }
         double getLengthSeconds() const noexcept
@@ -188,6 +193,13 @@ namespace keepsake
     private:
         juce::AudioFormatManager formatManager;
     };
+
+    /** Deterministic energy-onset detector. Returns ascending sample positions.
+        Lives here rather than Analysis.h because Analysis.h includes this header;
+        taking a raw buffer keeps the dependency one-way. Message/background
+        thread only - it is O(N) but not free. */
+    std::vector<int> detectTransients (const juce::AudioBuffer<float>& buffer,
+                                       double sampleRate);
 
     /** Resolves the capture window (in source samples) from Place and length. */
     struct CaptureWindow

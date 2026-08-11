@@ -9,18 +9,16 @@ using namespace keepsake;
 
 namespace
 {
-    /** Loads a synthetic keepsake into a processor without touching the filesystem. */
-    void giveProcessorASource (KeepsakeProcessor& proc, double sampleRate)
+    /** Loads an arbitrary prebuilt source into a processor without touching
+        the filesystem, via the real serialisation path. */
+    void giveProcessorThisSource (KeepsakeProcessor& proc, double sampleRate,
+                                  const SourceAudio& sourceToLoad)
     {
-        auto source = ktest::makeSineSource (220.0, 2.0, sampleRate, "test-tone");
-
-        // Round-trip through the real serialisation path so the tests exercise the
-        // same code a restored preset would.
-        const auto encoded = CaptureIO::encodeToBase64 (*source);
+        const auto encoded = CaptureIO::encodeToBase64 (sourceToLoad);
 
         auto state = proc.getState().copyState();
         state.setProperty ("audioData", encoded, nullptr);
-        state.setProperty ("audioName", "test-tone", nullptr);
+        state.setProperty ("audioName", sourceToLoad.name, nullptr);
         state.setProperty ("audioRate", sampleRate, nullptr);
 
         // Wrap in the same magic/version/length header the processor writes, so the
@@ -42,6 +40,15 @@ namespace
         }
 
         proc.setStateInformation (block.getData(), (int) block.getSize());
+    }
+
+    /** Loads a synthetic keepsake into a processor without touching the filesystem. */
+    void giveProcessorASource (KeepsakeProcessor& proc, double sampleRate)
+    {
+        // Round-trip through the real serialisation path so the tests exercise the
+        // same code a restored preset would.
+        auto source = ktest::makeSineSource (220.0, 2.0, sampleRate, "test-tone");
+        giveProcessorThisSource (proc, sampleRate, *source);
     }
 
     juce::AudioBuffer<float> renderMidi (KeepsakeProcessor& proc,
@@ -104,6 +111,7 @@ KTEST_CASE (processor_hasAllExpectedParametersExposedToTheHost)
         params::grainSize, params::grainDensity, params::grainDrift, params::grainShimmer,
         params::grainWindow, params::grainSpread,
         params::grainSync, params::grainDivision,
+        params::warpMode, params::grainSnap, params::pitchMode,
         params::focus, params::toneFrame, params::toneFrames, params::toneFrameWrap,
         params::filterType, params::filterCutoff, params::filterResonance, params::filterKeytrack,
         params::env2Attack, params::env2Decay, params::env2Sustain, params::env2Release,
@@ -1049,16 +1057,7 @@ KTEST_CASE (processor_glideMovesPitchGradually)
 
     auto dominantHz = [&] (int start, int fftOrder)
     {
-        const auto spectrum = ktest::powerSpectrumDb (out, start, fftOrder);
-        int best = 1;
-
-        for (int k = 2; k < (int) spectrum.size(); ++k)
-            if (spectrum[(size_t) k] > spectrum[(size_t) best])
-                best = k;
-
-        // Bin width must match the FFT size actually used - a mismatched
-        // constant here once halved every measured frequency.
-        return (double) best * sampleRate / (double) (1 << fftOrder);
+        return ktest::dominantHz (out, start, fftOrder, sampleRate);
     };
 
     // Well after the glide (long window, fine resolution): pitch has landed.
@@ -1452,8 +1451,9 @@ KTEST_CASE (presets_saveAndLoadRoundTripIncludingTheKeepsake)
     player.prepareToPlay (sampleRate, 512);
 
     PresetManager playerPresets (player, scratch.dir);
-    EXPECT_TRUE (playerPresets.getPresetNames().size() == 1);
-    EXPECT_TRUE (playerPresets.loadPreset ("My Moment"));
+    EXPECT_TRUE (playerPresets.getPresetNames().size()
+                     == playerPresets.getNumFactoryPresets() + 1);
+    EXPECT_TRUE (playerPresets.loadPreset (juce::String ("My Moment")));
 
     EXPECT_NEAR ((double) player.getState().getRawParameterValue (params::focus)->load(), 0.7, 1.0e-4);
     EXPECT_NEAR ((double) player.getState().getRawParameterValue (params::warmthAmount)->load(), 33.0, 1.0e-3);
@@ -1533,25 +1533,73 @@ KTEST_CASE (presets_prevNextCycleThroughSortedNames)
     proc.prepareToPlay (sampleRate, 512);
 
     PresetManager presets (proc, scratch.dir);
-    EXPECT_TRUE (! presets.loadNext()); // empty directory: nothing to step to
+
+    // The factory presets always lead the list; user presets follow them.
+    const auto factoryCount = presets.getNumFactoryPresets();
+    EXPECT_TRUE (factoryCount > 0);
+    EXPECT_TRUE (presets.getPresetNames().size() == factoryCount);
 
     for (const auto* name : { "Beta", "Alpha", "Gamma" })
         EXPECT_TRUE (presets.savePreset (name));
 
-    // Sorted order regardless of save order.
-    EXPECT_TRUE (presets.getPresetNames()[0] == "Alpha");
-    EXPECT_TRUE (presets.getPresetNames()[1] == "Beta");
-    EXPECT_TRUE (presets.getPresetNames()[2] == "Gamma");
+    // Sorted order regardless of save order, after the factory block.
+    EXPECT_TRUE (presets.getPresetNames()[factoryCount + 0] == "Alpha");
+    EXPECT_TRUE (presets.getPresetNames()[factoryCount + 1] == "Beta");
+    EXPECT_TRUE (presets.getPresetNames()[factoryCount + 2] == "Gamma");
 
-    // Save left us on Gamma; next wraps to the start.
+    // Save left us on Gamma, the last entry; next wraps to the first factory
+    // preset, and previous from there wraps back onto the user block.
     EXPECT_TRUE (presets.loadNext());
-    EXPECT_TRUE (presets.getCurrentName() == "Alpha");
+    EXPECT_TRUE (presets.getCurrentName() == presets.getPresetNames()[0]);
+    EXPECT_TRUE (presets.loadPrevious());
+    EXPECT_TRUE (presets.getCurrentName() == "Gamma");
+
+    // Stepping inside the user block still walks the sorted names.
+    EXPECT_TRUE (presets.loadPreset (juce::String ("Alpha")));
     EXPECT_TRUE (presets.loadNext());
     EXPECT_TRUE (presets.getCurrentName() == "Beta");
     EXPECT_TRUE (presets.loadPrevious());
     EXPECT_TRUE (presets.getCurrentName() == "Alpha");
-    EXPECT_TRUE (presets.loadPrevious()); // wraps backward
-    EXPECT_TRUE (presets.getCurrentName() == "Gamma");
+}
+
+KTEST_CASE (presets_factoryPresetsApplyWithoutTouchingTheKeepsake)
+{
+    // A factory preset is a sound design for the sample you already have -
+    // picking one must never republish (or clear) the loaded keepsake.
+    constexpr double sampleRate = 48000.0;
+    ScratchPresetDir scratch;
+
+    KeepsakeProcessor proc;
+    proc.prepareToPlay (sampleRate, 512);
+    giveProcessorASource (proc, sampleRate);
+    EXPECT_TRUE (proc.getSourceStore().hasSource());
+
+    PresetManager presets (proc, scratch.dir);
+    EXPECT_TRUE (presets.loadPreset (juce::String ("Formant Pad")));
+
+    EXPECT_MSG (proc.getSourceStore().hasSource(),
+                "a factory preset wiped the loaded keepsake");
+    EXPECT_TRUE (proc.getPresetDisplayName() == "Formant Pad");
+
+    // ...and it really did apply: Formant Pad turns on Formant mode.
+    EXPECT_TRUE (proc.getState().getParameter (params::pitchMode)->getValue() > 0.5f);
+}
+
+KTEST_CASE (presets_factoryPresetsResetWhatTheyDoNotName)
+{
+    // Switching presets must not inherit stray values from the previous sound,
+    // the same guarantee a user preset gets from setStateInformation.
+    ScratchPresetDir scratch;
+
+    KeepsakeProcessor proc;
+    setParam (proc, params::rootCents, 33.0f); // named by no factory preset
+
+    PresetManager presets (proc, scratch.dir);
+    EXPECT_TRUE (presets.loadPreset (juce::String ("Frozen Bloom")));
+
+    auto* cents = proc.getState().getParameter (params::rootCents);
+    EXPECT_MSG (std::abs (cents->getValue() - cents->getDefaultValue()) < 1.0e-6f,
+                "a parameter the preset does not name kept its stale value");
 }
 
 KTEST_CASE (randomize_rollsEverythingExceptMasterGainAndUndoRestoresExactly)
@@ -1880,3 +1928,314 @@ KTEST_CASE (processor_modWheelReachesTheMatrix)
     EXPECT_MSG (diff > 0.01f, "mod wheel had no effect through the matrix");
 }
 
+
+// =============================================================================
+// Warp (tempo-mapped Keep window) + transient Snap
+// =============================================================================
+
+namespace
+{
+    /** Decaying noise bursts over a -60dB floor - source material with
+        unambiguous transients at known positions. */
+    SourceAudio::Ptr makeClickSource (const std::vector<int>& positions,
+                                      int numSamples, double sampleRate)
+    {
+        SourceAudio::Ptr source (new SourceAudio());
+        source->sampleRate = sampleRate;
+        source->name = "clicks";
+        source->buffer.setSize (1, numSamples);
+
+        juce::Random rng (42);
+        auto* data = source->buffer.getWritePointer (0);
+
+        for (int i = 0; i < numSamples; ++i)
+            data[i] = (rng.nextFloat() * 2.0f - 1.0f) * 0.001f;
+
+        const auto burstLength = (int) (0.01 * sampleRate);
+
+        for (auto pos : positions)
+            for (int i = 0; i < burstLength && pos + i < numSamples; ++i)
+            {
+                const auto decay = 1.0f - (float) i / (float) burstLength;
+                data[pos + i] += (rng.nextFloat() * 2.0f - 1.0f) * 0.8f * decay;
+            }
+
+        return source;
+    }
+
+    float maxAbsDifference (const juce::AudioBuffer<float>& a,
+                            const juce::AudioBuffer<float>& b, int numSamples)
+    {
+        float diff = 0.0f;
+
+        for (int i = 0; i < numSamples; ++i)
+            diff = juce::jmax (diff, std::abs (a.getSample (0, i) - b.getSample (0, i)));
+
+        return diff;
+    }
+}
+
+KTEST_CASE (grains_warpSweepsTheKeepWindowAtTempo)
+{
+    // Source = exactly one Keep window: 250ms of 220Hz then 250ms of 880Hz.
+    // Warp "1 Bar" at the harness's 120 BPM fallback sweeps it in 2s, so the
+    // note must OPEN on 220Hz material and be playing 880Hz material past the
+    // half-bar - at the note's own pitch (ratio 1), proving a time-stretch.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 144000; // 3s; renderMidi releases at 2s
+
+    SourceAudio::Ptr split (new SourceAudio());
+    split->sampleRate = sampleRate;
+    split->name = "split-tone";
+    split->buffer.setSize (1, 24000);
+
+    auto* data = split->buffer.getWritePointer (0);
+
+    for (int i = 0; i < 24000; ++i)
+    {
+        const auto hz = i < 12000 ? 220.0 : 880.0;
+        data[i] = 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * hz
+                                           * (double) i / sampleRate);
+    }
+
+    auto render = [&] (int warpIndex)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorThisSource (proc, sampleRate, *split);
+        setParam (proc, params::place, 0.0f);
+        setParam (proc, params::captureLength, 500.0f);
+        setParam (proc, params::rootNote, 60.0f);
+        setParam (proc, params::grainSize, 30.0f);
+        setParam (proc, params::grainDrift, 0.0f);
+        setParam (proc, params::grainShimmer, 0.0f);
+        setParam (proc, params::grainSpread, 0.0f);
+        setParam (proc, params::warpMode, (float) warpIndex);
+        return renderMidi (proc, { 60 }, numSamples, 512, sampleRate);
+    };
+
+    const auto warped = render (3); // "1 Bar"
+    EXPECT_TRUE (ktest::isFinite (warped));
+
+    const auto early = ktest::dominantHz (warped, 14400, 13, sampleRate); // 0.3s in
+    const auto late = ktest::dominantHz (warped, 62400, 13, sampleRate);  // 1.3s in
+    EXPECT_MSG (std::abs (early - 220.0) < 30.0,
+                "warp start not on the window's opening material: "
+                    + juce::String (early, 1) + " Hz");
+    EXPECT_MSG (std::abs (late - 880.0) < 60.0,
+                "warp did not reach the window's later material: "
+                    + juce::String (late, 1) + " Hz");
+
+    // Negative control: Warp Off with Drift 0 never leaves the window start.
+    const auto still = render (0);
+    const auto stillLate = ktest::dominantHz (still, 62400, 13, sampleRate);
+    EXPECT_MSG (std::abs (stillLate - 220.0) < 30.0,
+                "warp-off render moved through the window: "
+                    + juce::String (stillLate, 1) + " Hz");
+}
+
+KTEST_CASE (grains_snapQuantizesGrainStartsToTransients)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 48000;
+
+    // Hits at 50ms and 300ms sit inside the 500ms Keep window; 800ms is outside.
+    auto clicks = makeClickSource ({ 2400, 14400, 38400 }, 48000, sampleRate);
+
+    auto render = [&] (bool snap, float driftPercent)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorThisSource (proc, sampleRate, *clicks);
+        setParam (proc, params::place, 0.0f);
+        setParam (proc, params::captureLength, 500.0f);
+        setParam (proc, params::grainSize, 20.0f);
+        setParam (proc, params::grainDrift, driftPercent);
+        setParam (proc, params::grainSpread, 0.0f);
+        setParam (proc, params::grainSnap, snap ? 1.0f : 0.0f);
+        return renderMidi (proc, { 60 }, numSamples, 512, sampleRate);
+    };
+
+    // Drift 0, Snap off: every grain reads the window start (noise floor).
+    // Snap on: starts quantise to the first hit - audibly different material.
+    const auto off = render (false, 0.0f);
+    const auto on = render (true, 0.0f);
+    EXPECT_TRUE (ktest::isFinite (off) && ktest::isFinite (on));
+    EXPECT_MSG (maxAbsDifference (off, on, numSamples) > 1.0e-4f,
+                "snap changed nothing - grains are not landing on hits");
+
+    // Full Drift with Snap on shuffles BETWEEN hits rather than jittering
+    // freely - it must differ from the pinned drift-0 snap render.
+    const auto shuffled = render (true, 100.0f);
+    EXPECT_MSG (maxAbsDifference (on, shuffled, numSamples) > 1.0e-4f,
+                "drift does not shuffle snapped grains between hits");
+}
+
+KTEST_CASE (processor_blockSizeIndependentWithWarpAndSnap)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 12288;
+
+    auto clicks = makeClickSource ({ 2400, 14400 }, 48000, sampleRate);
+
+    auto render = [&] (int blockSize)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        giveProcessorThisSource (proc, sampleRate, *clicks);
+        setParam (proc, params::warpMode, 3.0f);   // 1 Bar
+        setParam (proc, params::grainSnap, 1.0f);  // Transients
+        setParam (proc, params::grainSync, 1.0f);
+        setParam (proc, params::grainDivision, 9.0f); // 1/16
+        setParam (proc, params::grainDrift, 70.0f);   // exercise the shuffle RNG
+        return renderMidi (proc, { 60 }, numSamples, blockSize, sampleRate);
+    };
+
+    const auto a = render (64);
+    const auto b = render (1024);
+
+    EXPECT_TRUE (a.getMagnitude (0, numSamples) > 0.001f);
+
+    const auto worst = maxAbsDifference (a, b, numSamples);
+    EXPECT_MSG (! (worst > 0.0f),
+                "warp/snap render depends on block size: diff " + juce::String (worst, 8));
+}
+
+KTEST_CASE (processor_randomizeLeavesTuningAlone)
+{
+    KeepsakeProcessor proc;
+
+    setParam (proc, params::rootNote, 48.0f);
+    setParam (proc, params::rootCents, -20.0f);
+
+    auto normalised = [&] (const char* id)
+    {
+        return proc.getState().getParameter (id)->getValue();
+    };
+
+    const auto rootBefore = normalised (params::rootNote);
+    const auto centsBefore = normalised (params::rootCents);
+    const auto gainBefore = normalised (params::masterGain);
+    const auto placeBefore = normalised (params::place);
+    const auto sizeBefore = normalised (params::grainSize);
+
+    proc.randomizeParameters (1234);
+
+    // A random Root retunes the whole instrument - every roll would sound
+    // wrong regardless of texture, so tuning (and the output level) hold.
+    EXPECT_TRUE (std::abs (normalised (params::rootNote) - rootBefore) < 1.0e-9f);
+    EXPECT_TRUE (std::abs (normalised (params::rootCents) - centsBefore) < 1.0e-9f);
+    EXPECT_TRUE (std::abs (normalised (params::masterGain) - gainBefore) < 1.0e-9f);
+
+    // ...while the texture itself really did roll.
+    EXPECT_MSG (std::abs (normalised (params::place) - placeBefore) > 1.0e-6f
+                    || std::abs (normalised (params::grainSize) - sizeBefore) > 1.0e-6f,
+                "randomize changed nothing at all");
+}
+
+KTEST_CASE (grains_formantModeHoldsTimbreWhileKeysSetPitch)
+{
+    // Root A2 with a 220Hz source, played two octaves up at A4. Repitch mode
+    // must chipmunk the content to 880Hz. Formant mode keeps grains at their
+    // original rate - the spectrum stays anchored low - while the 440Hz
+    // emission clock imposes the played pitch as a spectral line.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 144000;
+
+    auto render = [&] (bool formant)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate); // 220Hz sine
+        setParam (proc, params::rootNote, 45.0f); // A2 = 110Hz
+        setParam (proc, params::grainDrift, 0.0f);
+        setParam (proc, params::grainShimmer, 0.0f);
+        setParam (proc, params::grainSpread, 0.0f);
+        setParam (proc, params::pitchMode, formant ? 1.0f : 0.0f);
+        return renderMidi (proc, { 69 }, numSamples, 512, sampleRate); // A4
+    };
+
+    const auto repitched = render (false);
+    const auto held = render (true);
+    EXPECT_TRUE (ktest::isFinite (repitched) && ktest::isFinite (held));
+
+    // Sanity: repitch really is +2 octaves on the content.
+    const auto chipmunk = ktest::dominantHz (repitched, 24000, 15, sampleRate);
+    EXPECT_MSG (std::abs (chipmunk - 880.0) < 30.0,
+                "repitch control wrong: " + juce::String (chipmunk, 1) + " Hz");
+
+    // Formant mode: the strongest component must stay well below the
+    // chipmunked 880 - the source timbre did not ride up the keyboard.
+    const auto anchored = ktest::dominantHz (held, 24000, 15, sampleRate);
+    EXPECT_MSG (anchored < 660.0,
+                "formant mode still chipmunks: dominant "
+                    + juce::String (anchored, 1) + " Hz");
+
+    // ...and the played pitch is present as a real spectral line: the bin at
+    // 440Hz must sit within 15dB of the spectrum's peak.
+    const auto spectrum = ktest::powerSpectrumDb (held, 24000, 15);
+    const auto binAt = [&] (double hz) { return (int) std::round (hz / sampleRate * 32768.0); };
+
+    float peakDb = -300.0f;
+    int peakBin = 2;
+
+    for (int k = 2; k < (int) spectrum.size(); ++k)
+        if (spectrum[(size_t) k] > peakDb)
+        {
+            peakDb = spectrum[(size_t) k];
+            peakBin = k;
+        }
+
+    float lineDb = -300.0f;
+    for (int k = binAt (440.0) - 2; k <= binAt (440.0) + 2; ++k)
+        lineDb = juce::jmax (lineDb, spectrum[(size_t) k]);
+
+    juce::String topPeaks;
+    {
+        // Local maxima at least 6 bins apart, top five by level.
+        std::vector<std::pair<float, int>> maxima;
+
+        for (int k = 4; k < (int) spectrum.size() - 1; ++k)
+            if (spectrum[(size_t) k] > spectrum[(size_t) (k - 1)]
+                && spectrum[(size_t) k] >= spectrum[(size_t) (k + 1)])
+                maxima.push_back ({ spectrum[(size_t) k], k });
+
+        std::sort (maxima.begin(), maxima.end(), std::greater<>());
+
+        for (size_t i = 0; i < juce::jmin ((size_t) 5, maxima.size()); ++i)
+            topPeaks << juce::String ((double) maxima[i].second * sampleRate / 32768.0, 1)
+                     << "Hz@" << juce::String (maxima[i].first, 1) << "dB ";
+    }
+
+    EXPECT_MSG (lineDb > peakDb - 15.0f,
+                "played pitch missing from formant render: 440Hz line is "
+                    + juce::String (peakDb - lineDb, 1) + " dB under the peak at "
+                    + juce::String ((double) peakBin * sampleRate / 32768.0, 1)
+                    + " Hz (dominant probe said " + juce::String (anchored, 1)
+                    + " Hz); top peaks: " + topPeaks);
+}
+
+KTEST_CASE (processor_blockSizeIndependentWithFormantAndWarp)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 12288;
+
+    auto render = [&] (int blockSize)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::pitchMode, 1.0f);
+        setParam (proc, params::warpMode, 3.0f); // 1 Bar
+        return renderMidi (proc, { 72 }, numSamples, blockSize, sampleRate);
+    };
+
+    const auto a = render (64);
+    const auto b = render (1024);
+
+    EXPECT_TRUE (a.getMagnitude (0, numSamples) > 0.001f);
+
+    const auto worst = maxAbsDifference (a, b, numSamples);
+    EXPECT_MSG (! (worst > 0.0f),
+                "formant/warp render depends on block size: diff " + juce::String (worst, 8));
+}

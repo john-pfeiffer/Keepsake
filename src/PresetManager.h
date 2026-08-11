@@ -19,6 +19,11 @@ namespace keepsake
         defaults for absent parameters before applying - deliberately there,
         not here, so host sessions get the same treatment).
 
+        The list starts with the built-in factory presets (see FactoryPresets.h)
+        and continues with the user's saved ones, so indices from the UI map
+        straight through. Factory entries are parameter-only and leave the
+        loaded keepsake alone; user entries carry their own audio.
+
         Message thread only. The directory is injectable so tests never touch
         the user's real preset folder.
     */
@@ -39,6 +44,9 @@ namespace keepsake
         int getCurrentIndex() const noexcept { return currentIndex; }
         juce::String getCurrentName() const;
 
+        /** How many leading entries of getPresetNames() are factory presets. */
+        int getNumFactoryPresets() const noexcept { return numFactory; }
+
         /** Saves the current state under the given name (sanitized to a legal
             file name), overwriting any existing preset of that name. */
         bool savePreset (const juce::String& name);
@@ -53,9 +61,13 @@ namespace keepsake
     private:
         bool stepBy (int delta);
 
+        /** Applies a factory preset's parameters. Never touches the source. */
+        bool applyFactoryPreset (int factoryIndex);
+
         KeepsakeProcessor& processor;
         juce::File directory;
-        juce::StringArray names; // sorted, extension stripped
+        juce::StringArray names; // factory first, then user presets (sorted)
+        int numFactory = 0;
         int currentIndex = -1;
     };
 }

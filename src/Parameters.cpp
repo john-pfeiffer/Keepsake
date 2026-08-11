@@ -87,8 +87,11 @@ namespace keepsake::params
                                               { return juce::String (v * 100.0f, 1) + " %"; })
                 .withValueFromStringFunction ([] (const juce::String& t)
                                               { return t.getFloatValue() * 0.01f; })));
+        // NOTE: widening this range remaps any normalised host automation of
+        // Keep recorded before the change (plain preset values are unaffected).
+        // Accepted pre-1.0; do not widen it again after release.
         layout.add (makeFloat (captureLength, "Keep Length",
-                               skewed (10.0f, 500.0f, 100.0f), 120.0f, " ms", 1));
+                               skewed (kKeepLengthMinMs, kKeepLengthMaxMs, 300.0f), 120.0f, " ms", 1));
 
         // --- Root -----------------------------------------------------------
         layout.add (std::make_unique<juce::AudioParameterFloat> (
@@ -126,6 +129,30 @@ namespace keepsake::params
             juce::StringArray { "1/1", "1/2", "1/2T", "1/4.", "1/4", "1/4T",
                                 "1/8.", "1/8", "1/8T", "1/16", "1/16T", "1/32" },
             7)); // 1/8
+
+        // Warp sweeps the grain read position across the Keep window over N
+        // bars (4/4 assumed), anchored to note-on; pitch is untouched, so it
+        // behaves as a time-stretch. Snap quantises grain starts to detected
+        // transients. Both lists are frozen ABI like every choice below.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { warpMode, 1 },
+            "Warp",
+            juce::StringArray { "Off", "1/4 Bar", "1/2 Bar", "1 Bar", "2 Bars", "4 Bars" },
+            0));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { grainSnap, 1 },
+            "Snap",
+            juce::StringArray { "Off", "Transients" },
+            0));
+
+        // Formant mode is the anti-chipmunk: grains keep their ORIGINAL
+        // playback rate (timbre never moves) and the played key sets the
+        // pitch through the grain repetition rate instead (PSOLA-style).
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { pitchMode, 1 },
+            "Pitch Mode",
+            juce::StringArray { "Repitch", "Formant" },
+            0));
 
         // --- Tone -----------------------------------------------------------
         // Focus defaults to full Cloud so the plugin sounds exactly like M2 out of
@@ -264,6 +291,9 @@ namespace keepsake::params
         grainSpread   = state.getRawParameterValue (params::grainSpread);
         grainSync     = state.getRawParameterValue (params::grainSync);
         grainDivision = state.getRawParameterValue (params::grainDivision);
+        warpMode  = state.getRawParameterValue (params::warpMode);
+        grainSnap = state.getRawParameterValue (params::grainSnap);
+        pitchMode = state.getRawParameterValue (params::pitchMode);
         focus         = state.getRawParameterValue (params::focus);
         toneFrame     = state.getRawParameterValue (params::toneFrame);
         toneFrames    = state.getRawParameterValue (params::toneFrames);

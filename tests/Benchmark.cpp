@@ -22,10 +22,25 @@ namespace ktest
                   << "  sample rate " << sampleRate << " Hz, block " << blockSize << "\n"
                   << "  (CPU % is the share of one core needed to keep up in real time)\n  Focus 0.5: Cloud and Tone both active on every voice\n\n";
 
-        for (bool fxActive : { false, true })
+        // Formant mode emits one grain per pitch period, so its cost scales with
+        // the note played, not with Density - the high-note row is the one that
+        // matters for it.
+        struct Scenario
         {
-        std::cout << (fxActive ? "  with FX (Warmth 50, Chorus 50, Air 30):\n"
-                               : "  FX bypassed (all FX at 0):\n");
+            const char* label;
+            bool fxActive;
+            bool formant;
+            int baseNote;
+        };
+
+        for (const auto& scenario : {
+                 Scenario { "  FX bypassed (all FX at 0):\n", false, false, 48 },
+                 Scenario { "  with FX (Warmth 50, Chorus 50, Air 30):\n", true, false, 48 },
+                 Scenario { "  Formant mode, high notes (C6+), FX bypassed:\n", false, true, 84 },
+                 Scenario { "  Formant mode, high notes (C6+), with FX:\n", true, true, 84 } })
+        {
+        const auto fxActive = scenario.fxActive;
+        std::cout << scenario.label;
 
         for (int numVoices : { 1, 4, 8, 12 })
         {
@@ -76,6 +91,10 @@ namespace ktest
                     mix->setValueNotifyingHost (0.3f);
             }
 
+            if (scenario.formant)
+                if (auto* mode = proc.getState().getParameter ("pitchMode"))
+                    mode->setValueNotifyingHost (1.0f);
+
             juce::AudioBuffer<float> audio (2, blockSize);
 
             // Sustained notes, so every voice is genuinely running.
@@ -83,7 +102,7 @@ namespace ktest
                 juce::MidiBuffer midi;
 
                 for (int i = 0; i < numVoices; ++i)
-                    midi.addEvent (juce::MidiMessage::noteOn (1, 48 + i, 0.8f), 0);
+                    midi.addEvent (juce::MidiMessage::noteOn (1, scenario.baseNote + i, 0.8f), 0);
 
                 audio.clear();
                 proc.processBlock (audio, midi);

@@ -692,11 +692,14 @@ namespace keepsake
 
         for (auto* p : parameters)
         {
-            // Master output is excluded for ear protection (spec §3); the
-            // loaded audio is not a parameter, so it is excluded by
-            // construction. Everything else rolls.
+            // Master output is excluded for ear protection (spec §3), Root and
+            // Fine because randomised tuning makes every roll sound wrong
+            // regardless of texture; the loaded audio is not a parameter, so
+            // it is excluded by construction. Everything else rolls.
             if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (p))
-                if (ranged->paramID == juce::String (params::masterGain))
+                if (ranged->paramID == juce::String (params::masterGain)
+                    || ranged->paramID == juce::String (params::rootNote)
+                    || ranged->paramID == juce::String (params::rootCents))
                     continue;
 
             p->beginChangeGesture();

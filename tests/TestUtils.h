@@ -161,6 +161,22 @@ namespace ktest
         return db;
     }
 
+    /** Frequency of the strongest bin (DC excluded). The bin width must match
+        the FFT size actually used - a mismatched constant here once halved
+        every measured frequency. */
+    inline double dominantHz (const juce::AudioBuffer<float>& buffer,
+                              int startSample, int fftOrder, double sampleRate)
+    {
+        const auto spectrum = powerSpectrumDb (buffer, startSample, fftOrder);
+        int best = 1;
+
+        for (int k = 2; k < (int) spectrum.size(); ++k)
+            if (spectrum[(size_t) k] > spectrum[(size_t) best])
+                best = k;
+
+        return (double) best * sampleRate / (double) (1 << fftOrder);
+    }
+
     /**
         The alias detector. A wavetable at a static Frame is exactly periodic at
         the played frequency whatever the source material, so every legitimate

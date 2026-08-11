@@ -4,8 +4,9 @@
 
 VST3 · AU · Standalone — JUCE 8, C++20, CMake.
 
-Drag in any audio file, scrub to a moment, keep a 10–500 ms window of it, and play that
-instant across the keyboard.
+Drag in any audio file, scrub to a moment, keep a slice of it — 10 ms to 10 s — and
+play that instant across the keyboard. Warp it to the song's tempo, snap grains to
+the sample's own transients, and hold its timbre steady as you move up the keys.
 
 ---
 
@@ -24,6 +25,7 @@ held outside this repo) are implemented. Section references in code comments —
 | **M4** Focus + Mod | Focus coupling, filter, ENV2, LFOs, mod matrix, mono/legato | Done |
 | **M5** FX + Presets + Randomize | Warmth/Chorus/Air, preset browser, Randomize | Done |
 | **M6** Package | macOS pkg (notarized when certs configured), Inno Setup installer, GitHub Releases | Done |
+| **v1.1** Musical controls | Tempo-synced grains, Warp, transient Snap, Formant pitch mode, factory presets | In progress |
 
 Focus carries the full §2.4 coupling: toward Tone the cloud condenses (density
 up, grains shorter, shimmer down); toward Cloud, Tone ducks early and detunes
@@ -180,10 +182,26 @@ rows within one run, not across READMEs.
 - **Play file / Play keep** audition the source and the captured window.
 - Play MIDI. **Root** tells the engine what pitch the source material is; everything
   tracks from there.
+- **Warp** (KEEPSAKE row) sweeps the read position across the kept window over
+  1/4 to 4 bars at host tempo, restarting on each note. Pitch is untouched, so it
+  reads as a tempo-mapped time-stretch rather than a repitch. Bars assume 4/4.
+  Give it room — Keep Length reaches 10 s, and a 4-bar sweep at 120 BPM wants 8 s
+  of material.
+- **Snap** starts grains on transients detected in the source (found at import and
+  again on preset load, so it costs nothing at play time). With **Drift** at 0 each
+  grain takes the nearest hit — a faithful re-groove; turning Drift up makes Drift
+  the odds of jumping to a random hit instead, which resequences the sample.
+- **Formant** (CLOUD row) is the fix for high notes sounding chipmunked. Grains keep
+  their original playback rate, so the source timbre stays put wherever you play,
+  and the pitch comes from the grain repetition rate instead. It overrides Density
+  and Sync, since its emission clock *is* the pitch; Drift smears the starts and
+  dissolves the note back into texture.
 - **Presets** live in the top bar: type a name, *Save*; step with **< >** or pick
-  from the list. A preset embeds its keepsake, so it plays anywhere. **Random**
-  rolls every control except the output level (and the loaded audio); **Back**
-  undoes it. Presets are stored in `Documents/Keepsake/Presets`.
+  from the list. The built-in presets come first and are parameter-only — they
+  re-dress the keepsake you already have rather than replacing it. Presets you save
+  yourself embed their keepsake, so they play anywhere. **Random** rolls every
+  control except the output level, Root/Fine tuning, and the loaded audio; **Back**
+  undoes it. Saved presets live in `Documents/Keepsake/Presets`.
 
 Every control is an automatable host parameter, including Place and Keep Length — the
 waveform bracket writes through the parameter system with proper begin/end gestures, so
