@@ -52,6 +52,11 @@ namespace keepsake
             double windowMorph = 0.0;    // 0..1
             double spread = 0.4;         // 0..1
             double playbackRatio = 1.0;  // MIDI note vs Root
+
+            // Tempo sync: when > 0, grains spawn at EXACTLY this interval
+            // (no jitter - the grid is the point), anchored to note-on via
+            // reset(). 0 = free-running from densityPerSecond.
+            double syncIntervalSamples = 0.0;
         };
 
         void prepare (double sampleRate);

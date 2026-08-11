@@ -197,7 +197,12 @@ namespace keepsake
             return;
 
         const auto density = juce::jlimit (0.5, 500.0, settings.densityPerSecond);
-        const auto samplesPerGrain = currentSampleRate / density;
+        // Tempo sync replaces the density-derived interval outright, and the
+        // overlap compensation below follows it - level must track the REAL
+        // emission rate, not the ignored Density knob.
+        const auto synced = settings.syncIntervalSamples > 0.0;
+        const auto samplesPerGrain = synced ? settings.syncIntervalSamples
+                                            : currentSampleRate / density;
 
         // Grains are mutually uncorrelated, so their powers sum: compensating by
         // 1/sqrt(overlap) keeps perceived level roughly constant while Density and
@@ -228,9 +233,10 @@ namespace keepsake
             {
                 spawnGrain (*source, settings, window.startSample, window.numSamples);
 
-                // Spawn interval is jittered slightly so that at low densities the
-                // grain train does not become an audible periodic buzz.
-                const auto jitter = 0.9 + 0.2 * rng.nextDouble();
+                // Free mode jitters the interval slightly so low densities do
+                // not buzz periodically. Sync mode is EXACT - the musical grid
+                // is the point, and reset() at note-on anchors it to the note.
+                const auto jitter = synced ? 1.0 : 0.9 + 0.2 * rng.nextDouble();
                 samplesUntilNextGrain += samplesPerGrain * jitter;
             }
 
