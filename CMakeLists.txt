@@ -72,6 +72,7 @@ juce_generate_juce_header(Keepsake)
 target_sources(Keepsake PRIVATE
         src/PluginProcessor.cpp
         src/PluginEditor.cpp
+        src/FactoryPresets.cpp
         src/Parameters.cpp
         src/PresetManager.cpp
         src/engine/Analysis.cpp

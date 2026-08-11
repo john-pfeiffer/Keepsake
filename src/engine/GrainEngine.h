@@ -57,6 +57,23 @@ namespace keepsake
             // (no jitter - the grid is the point), anchored to note-on via
             // reset(). 0 = free-running from densityPerSecond.
             double syncIntervalSamples = 0.0;
+
+            // Warp: when > 0, the grain read position sweeps once across the
+            // Keep window per 1/increment samples (note-anchored, looping).
+            // Pitch is untouched, so the sweep is a time-stretch. 0 = off.
+            double warpPhaseIncrement = 0.0;
+
+            // Snap: quantise each grain's start to the nearest detected
+            // transient inside the window; Drift becomes the probability of
+            // shuffling to a random in-window transient instead.
+            bool snapToTransients = false;
+
+            // Formant mode (PSOLA-style): when > 0, grains play at their
+            // ORIGINAL rate - the source timbre never shifts - and are emitted
+            // once per played-pitch period, so the repetition rate IS the
+            // pitch. Overrides both density and tempo sync; playbackRatio is
+            // ignored (shimmer still detunes around unity). 0 = repitch mode.
+            double formantIntervalSamples = 0.0;
         };
 
         void prepare (double sampleRate);
@@ -87,12 +104,16 @@ namespace keepsake
             float windowMorph = 0.0f;
         };
 
-        void spawnGrain (const SourceAudio& source, const Settings& s, int windowStart, int windowLength) noexcept;
+        /** lateSamples: how far past the exact (fractional) spawn instant this
+            integer-sample spawn is; the grain starts pre-advanced by that much. */
+        void spawnGrain (const SourceAudio& source, const Settings& s,
+                         int windowStart, int windowLength, double lateSamples) noexcept;
         float readSource (const SourceAudio& source, int channel, double position) const noexcept;
 
         std::array<Grain, kMaxGrains> grains {};
         double currentSampleRate = 44100.0;
         double samplesUntilNextGrain = 0.0;
+        double warpPhase = 0.0; // 0..1 through the Keep window, note-anchored
         juce::Random rng { 0x5EED };
         int nextGrainSlot = 0;
         float normaliseGain = 1.0f;

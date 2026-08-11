@@ -145,7 +145,8 @@ namespace keepsake
         auto& state = proc.getState();
         const auto oldBracket = getBracketSamples();
 
-        const auto lengthMs = juce::jlimit (10.0, 500.0,
+        const auto lengthMs = juce::jlimit ((double) params::kKeepLengthMinMs,
+                                            (double) params::kKeepLengthMaxMs,
                                             lengthSamples / source->sampleRate * 1000.0);
 
         if (auto* p = state.getParameter (params::captureLength))

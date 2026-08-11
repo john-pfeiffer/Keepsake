@@ -208,6 +208,7 @@ namespace keepsake
         resample (source->buffer, reader->sampleRate, targetSampleRate);
         source->sampleRate = targetSampleRate;
         result.trimmed = trimToCap (source->buffer, targetSampleRate, placeNormalised);
+        source->transients = detectTransients (source->buffer, targetSampleRate);
         result.source = source;
 
         return result;
@@ -248,6 +249,7 @@ namespace keepsake
         resample (source->buffer, reader->sampleRate, targetSampleRate);
         source->sampleRate = targetSampleRate;
         result.trimmed = trimToCap (source->buffer, targetSampleRate, placeNormalised);
+        source->transients = detectTransients (source->buffer, targetSampleRate);
         result.source = source;
 
         return result;
@@ -313,8 +315,81 @@ namespace keepsake
         const auto sourceRate = reader->sampleRate > 0.0 ? reader->sampleRate : storedSampleRate;
         resample (source->buffer, sourceRate, targetSampleRate);
         source->sampleRate = targetSampleRate;
+        source->transients = detectTransients (source->buffer, targetSampleRate);
 
         return source;
+    }
+
+    // =========================================================================
+    // detectTransients
+    // =========================================================================
+
+    std::vector<int> detectTransients (const juce::AudioBuffer<float>& buffer,
+                                       double sampleRate)
+    {
+        std::vector<int> onsets;
+
+        const auto numSamples = buffer.getNumSamples();
+        const auto numChannels = buffer.getNumChannels();
+
+        if (numSamples <= 0 || numChannels <= 0 || sampleRate <= 0.0)
+            return onsets;
+
+        // Per-hop mono energy. 256 samples is ~5ms at 48k - fine enough that a
+        // drum hit lands within one grain-attack of its true position.
+        constexpr int kHop = 256;
+        const auto numHops = (numSamples + kHop - 1) / kHop;
+
+        std::vector<double> energy ((size_t) numHops, 0.0);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            const auto* data = buffer.getReadPointer (ch);
+
+            for (int i = 0; i < numSamples; ++i)
+                energy[(size_t) (i / kHop)] += (double) data[i] * (double) data[i];
+        }
+
+        double peakEnergy = 0.0;
+
+        for (auto e : energy)
+            peakEnergy = juce::jmax (peakEnergy, e);
+
+        if (peakEnergy <= 0.0)
+            return onsets;
+
+        // One-pole local average (~100ms) as the reference level; an onset is a
+        // hop that jumps well above it. The relative floor keeps room-noise
+        // wobble in near-silence from registering as hits.
+        const auto averageCoeff = std::exp (-(double) kHop / (0.1 * sampleRate));
+        const auto refractoryHops = juce::jmax (1, (int) std::ceil (0.04 * sampleRate / kHop));
+        constexpr double kRiseRatio = 2.5;
+        const auto floorEnergy = 1.0e-4 * peakEnergy;
+
+        auto localAverage = energy[0];
+        auto hopsSinceOnset = refractoryHops; // the very first hop may fire
+
+        for (int h = 0; h < numHops; ++h)
+        {
+            const auto e = energy[(size_t) h];
+            const auto isOnset = hopsSinceOnset >= refractoryHops
+                              && e > floorEnergy
+                              && e > kRiseRatio * juce::jmax (localAverage, 1.0e-12);
+
+            if (isOnset)
+            {
+                onsets.push_back (h * kHop);
+                hopsSinceOnset = 0;
+            }
+            else
+            {
+                ++hopsSinceOnset;
+            }
+
+            localAverage = averageCoeff * localAverage + (1.0 - averageCoeff) * e;
+        }
+
+        return onsets;
     }
 
     // =========================================================================

@@ -392,6 +392,43 @@ namespace keepsake
         {
             cloudSettings.syncIntervalSamples = 0.0;
         }
+
+        // Warp: one sweep of the Keep window per N bars (4/4 assumed - host
+        // time signatures are a deferred feature), note-anchored like the
+        // sync grid. Index 0 is Off.
+        {
+            static constexpr double kWarpBars[] = { 0.0, 0.25, 0.5, 1.0, 2.0, 4.0 };
+            const auto warpIndex = juce::jlimit (0, 5, (int) std::lround (params.warpMode->load()));
+            const auto bars = kWarpBars[warpIndex];
+
+            if (bars > 0.0)
+            {
+                const auto bpm = blockContext.bpm.load (std::memory_order_relaxed);
+                const auto loopSamples = bars * 4.0 * (60.0 / juce::jmax (1.0, bpm)) * sampleRate;
+                cloudSettings.warpPhaseIncrement = 1.0 / loopSamples;
+            }
+            else
+            {
+                cloudSettings.warpPhaseIncrement = 0.0;
+            }
+        }
+
+        cloudSettings.snapToTransients = params.grainSnap->load() >= 0.5f;
+
+        // Formant mode: emission once per played-pitch period (same glide/
+        // wheel/mod pitch the repitch path uses, so vibrato still tracks) -
+        // the source timbre stays put while the keys set the pitch.
+        if (params.pitchMode->load() >= 0.5f)
+        {
+            const auto playedHz = analysis::noteFrequencyHz (glideCurrentNote
+                                                             + pitchWheelSemitones
+                                                             + (double) snapshot.pitchSemitones);
+            cloudSettings.formantIntervalSamples = sampleRate / juce::jmax (1.0, playedHz);
+        }
+        else
+        {
+            cloudSettings.formantIntervalSamples = 0.0;
+        }
         cloudSettings.drift           = (double) modded (mod::destDrift, params.grainDrift, snapshot.drift) * 0.01;
         cloudSettings.shimmerCents    = (double) modded (mod::destShimmer, params.grainShimmer, snapshot.shimmer)
                                           * (double) coupling::shimmerMultiplier (focus);
