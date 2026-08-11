@@ -215,3 +215,18 @@ KTEST_CASE (transients_importPathsPopulateTheSource)
                 "restored source carries " + juce::String ((int) restored->transients.size())
                     + " transients, expected 2");
 }
+
+KTEST_CASE (captureWindow_keepLengthReachesWholePhrases)
+{
+    // The Keep range was widened to 10s so Warp can sweep a full phrase -
+    // long requests must resolve to real multi-second windows, not an
+    // implicit 500ms ceiling somewhere in the chain.
+    auto source = ktest::makeSineSource (440.0, 6.0, 48000.0);
+
+    const auto w = CaptureWindow::resolve (*source, 0.0, 4000.0, 48000.0);
+    EXPECT_TRUE (w.numSamples == 192000); // 4s at 48k
+
+    // Still clamped to the source when the request exceeds it.
+    const auto huge = CaptureWindow::resolve (*source, 0.0, 10000.0, 48000.0);
+    EXPECT_TRUE (huge.numSamples == source->getNumSamples());
+}

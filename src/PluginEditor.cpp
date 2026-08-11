@@ -131,7 +131,7 @@ namespace keepsake
                                  "Place - capture position through the source file. Automatable; "
                                  "small mod depths give subtle movement, large sweeps scan the whole file."));
         rootPanel.addKnob (knob (params::captureLength, "Keep",
-                                 "Keep Length - length of the captured window, 10-500 ms."));
+                                 "Keep Length - length of the captured window, 10 ms to 10 s."));
         rootPanel.addKnob (choice (params::warpMode, "Warp",
                                    "Sweeps the kept window over N bars at song tempo, restarting "
                                    "each note. Pitch is unchanged - a tempo-mapped time-stretch."));

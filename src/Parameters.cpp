@@ -87,8 +87,11 @@ namespace keepsake::params
                                               { return juce::String (v * 100.0f, 1) + " %"; })
                 .withValueFromStringFunction ([] (const juce::String& t)
                                               { return t.getFloatValue() * 0.01f; })));
+        // NOTE: widening this range remaps any normalised host automation of
+        // Keep recorded before the change (plain preset values are unaffected).
+        // Accepted pre-1.0; do not widen it again after release.
         layout.add (makeFloat (captureLength, "Keep Length",
-                               skewed (10.0f, 500.0f, 100.0f), 120.0f, " ms", 1));
+                               skewed (kKeepLengthMinMs, kKeepLengthMaxMs, 300.0f), 120.0f, " ms", 1));
 
         // --- Root -----------------------------------------------------------
         layout.add (std::make_unique<juce::AudioParameterFloat> (
