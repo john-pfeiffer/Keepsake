@@ -136,16 +136,24 @@ namespace keepsake
     void GrainEngine::spawnGrain (const SourceAudio& source,
                                   const Settings& s,
                                   int windowStart,
-                                  int windowLength) noexcept
+                                  int windowLength,
+                                  double lateSamples) noexcept
     {
         // Round-robin the pool. When all 32 are busy the oldest slot is simply
         // recycled - that is the documented cap, not an error.
         auto& g = grains[(size_t) nextGrainSlot];
         nextGrainSlot = (nextGrainSlot + 1) % kMaxGrains;
 
-        // Grain size is clamped to the capture length (spec §2.2).
+        // Grain size is clamped to the capture length (spec §2.2). In formant
+        // mode it is also capped at four pitch periods: overlap beyond that
+        // adds nothing audible but would exhaust the 32-grain pool on high
+        // notes (a period at C8 is ~11 samples).
         auto lengthSamples = s.grainSizeMs * 0.001 * currentSampleRate;
         lengthSamples = juce::jmin (lengthSamples, (double) windowLength);
+
+        if (s.formantIntervalSamples > 0.0)
+            lengthSamples = juce::jmin (lengthSamples, 4.0 * s.formantIntervalSamples);
+
         lengthSamples = juce::jmax (2.0, lengthSamples);
 
         const auto positionSpan = (double) juce::jmax (0, windowLength - (int) lengthSamples);
@@ -196,7 +204,9 @@ namespace keepsake
             }
         }
 
-        double rate = s.playbackRatio;
+        // Formant mode leaves the source unrepitched - the emission clock in
+        // process() supplies the played pitch instead.
+        double rate = s.formantIntervalSamples > 0.0 ? 1.0 : s.playbackRatio;
 
         if (s.shimmerCents > 0.0)
         {
@@ -211,9 +221,9 @@ namespace keepsake
         }
 
         g.active = true;
-        g.readPos = readStart;
+        g.readPos = readStart + lateSamples * rate;
         g.rate = rate;
-        g.age = 0.0;
+        g.age = lateSamples;
         g.length = lengthSamples;
         g.windowMorph = (float) s.windowMorph;
 
@@ -244,10 +254,14 @@ namespace keepsake
         const auto density = juce::jlimit (0.5, 500.0, settings.densityPerSecond);
         // Tempo sync replaces the density-derived interval outright, and the
         // overlap compensation below follows it - level must track the REAL
-        // emission rate, not the ignored Density knob.
-        const auto synced = settings.syncIntervalSamples > 0.0;
-        const auto samplesPerGrain = synced ? settings.syncIntervalSamples
-                                            : currentSampleRate / density;
+        // emission rate, not the ignored Density knob. Formant mode outranks
+        // both: its emission clock IS the played pitch, so neither Density
+        // nor the tempo grid may touch it.
+        const auto formant = settings.formantIntervalSamples > 0.0;
+        const auto synced = ! formant && settings.syncIntervalSamples > 0.0;
+        const auto samplesPerGrain = formant ? juce::jmax (2.0, settings.formantIntervalSamples)
+                                   : synced  ? settings.syncIntervalSamples
+                                             : currentSampleRate / density;
 
         // Grains are mutually uncorrelated, so their powers sum: compensating by
         // 1/sqrt(overlap) keeps perceived level roughly constant while Density and
@@ -276,12 +290,24 @@ namespace keepsake
 
             if (samplesUntilNextGrain <= 0.0)
             {
-                spawnGrain (*source, settings, window.startSample, window.numSamples);
+                // Formant mode needs sub-sample spawn alignment: the pitch
+                // period is rarely an integer number of samples, and grains
+                // restart their carrier from the same source position, so a
+                // spawn grid quantised to whole samples collapses the played
+                // pitch into a subharmonic comb (440Hz at 48k -> a 40Hz
+                // buzz). Pre-advancing each grain by its quantisation error
+                // keeps the emission exactly periodic. Other modes stay at
+                // 0 so their output is bit-identical to previous builds.
+                const auto late = formant ? -samplesUntilNextGrain : 0.0;
+
+                spawnGrain (*source, settings, window.startSample, window.numSamples, late);
 
                 // Free mode jitters the interval slightly so low densities do
                 // not buzz periodically. Sync mode is EXACT - the musical grid
                 // is the point, and reset() at note-on anchors it to the note.
-                const auto jitter = synced ? 1.0 : 0.9 + 0.2 * rng.nextDouble();
+                // Formant mode is exact too: interval jitter there is pitch
+                // jitter.
+                const auto jitter = (synced || formant) ? 1.0 : 0.9 + 0.2 * rng.nextDouble();
                 samplesUntilNextGrain += samplesPerGrain * jitter;
             }
 

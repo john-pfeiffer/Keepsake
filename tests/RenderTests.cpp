@@ -111,7 +111,7 @@ KTEST_CASE (processor_hasAllExpectedParametersExposedToTheHost)
         params::grainSize, params::grainDensity, params::grainDrift, params::grainShimmer,
         params::grainWindow, params::grainSpread,
         params::grainSync, params::grainDivision,
-        params::warpMode, params::grainSnap,
+        params::warpMode, params::grainSnap, params::pitchMode,
         params::focus, params::toneFrame, params::toneFrames, params::toneFrameWrap,
         params::filterType, params::filterCutoff, params::filterResonance, params::filterKeytrack,
         params::env2Attack, params::env2Decay, params::env2Sustain, params::env2Release,
@@ -2082,4 +2082,111 @@ KTEST_CASE (processor_randomizeLeavesTuningAlone)
     EXPECT_MSG (std::abs (normalised (params::place) - placeBefore) > 1.0e-6f
                     || std::abs (normalised (params::grainSize) - sizeBefore) > 1.0e-6f,
                 "randomize changed nothing at all");
+}
+
+KTEST_CASE (grains_formantModeHoldsTimbreWhileKeysSetPitch)
+{
+    // Root A2 with a 220Hz source, played two octaves up at A4. Repitch mode
+    // must chipmunk the content to 880Hz. Formant mode keeps grains at their
+    // original rate - the spectrum stays anchored low - while the 440Hz
+    // emission clock imposes the played pitch as a spectral line.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 144000;
+
+    auto render = [&] (bool formant)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate); // 220Hz sine
+        setParam (proc, params::rootNote, 45.0f); // A2 = 110Hz
+        setParam (proc, params::grainDrift, 0.0f);
+        setParam (proc, params::grainShimmer, 0.0f);
+        setParam (proc, params::grainSpread, 0.0f);
+        setParam (proc, params::pitchMode, formant ? 1.0f : 0.0f);
+        return renderMidi (proc, { 69 }, numSamples, 512, sampleRate); // A4
+    };
+
+    const auto repitched = render (false);
+    const auto held = render (true);
+    EXPECT_TRUE (ktest::isFinite (repitched) && ktest::isFinite (held));
+
+    // Sanity: repitch really is +2 octaves on the content.
+    const auto chipmunk = ktest::dominantHz (repitched, 24000, 15, sampleRate);
+    EXPECT_MSG (std::abs (chipmunk - 880.0) < 30.0,
+                "repitch control wrong: " + juce::String (chipmunk, 1) + " Hz");
+
+    // Formant mode: the strongest component must stay well below the
+    // chipmunked 880 - the source timbre did not ride up the keyboard.
+    const auto anchored = ktest::dominantHz (held, 24000, 15, sampleRate);
+    EXPECT_MSG (anchored < 660.0,
+                "formant mode still chipmunks: dominant "
+                    + juce::String (anchored, 1) + " Hz");
+
+    // ...and the played pitch is present as a real spectral line: the bin at
+    // 440Hz must sit within 15dB of the spectrum's peak.
+    const auto spectrum = ktest::powerSpectrumDb (held, 24000, 15);
+    const auto binAt = [&] (double hz) { return (int) std::round (hz / sampleRate * 32768.0); };
+
+    float peakDb = -300.0f;
+    int peakBin = 2;
+
+    for (int k = 2; k < (int) spectrum.size(); ++k)
+        if (spectrum[(size_t) k] > peakDb)
+        {
+            peakDb = spectrum[(size_t) k];
+            peakBin = k;
+        }
+
+    float lineDb = -300.0f;
+    for (int k = binAt (440.0) - 2; k <= binAt (440.0) + 2; ++k)
+        lineDb = juce::jmax (lineDb, spectrum[(size_t) k]);
+
+    juce::String topPeaks;
+    {
+        // Local maxima at least 6 bins apart, top five by level.
+        std::vector<std::pair<float, int>> maxima;
+
+        for (int k = 4; k < (int) spectrum.size() - 1; ++k)
+            if (spectrum[(size_t) k] > spectrum[(size_t) (k - 1)]
+                && spectrum[(size_t) k] >= spectrum[(size_t) (k + 1)])
+                maxima.push_back ({ spectrum[(size_t) k], k });
+
+        std::sort (maxima.begin(), maxima.end(), std::greater<>());
+
+        for (size_t i = 0; i < juce::jmin ((size_t) 5, maxima.size()); ++i)
+            topPeaks << juce::String ((double) maxima[i].second * sampleRate / 32768.0, 1)
+                     << "Hz@" << juce::String (maxima[i].first, 1) << "dB ";
+    }
+
+    EXPECT_MSG (lineDb > peakDb - 15.0f,
+                "played pitch missing from formant render: 440Hz line is "
+                    + juce::String (peakDb - lineDb, 1) + " dB under the peak at "
+                    + juce::String ((double) peakBin * sampleRate / 32768.0, 1)
+                    + " Hz (dominant probe said " + juce::String (anchored, 1)
+                    + " Hz); top peaks: " + topPeaks);
+}
+
+KTEST_CASE (processor_blockSizeIndependentWithFormantAndWarp)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 12288;
+
+    auto render = [&] (int blockSize)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::pitchMode, 1.0f);
+        setParam (proc, params::warpMode, 3.0f); // 1 Bar
+        return renderMidi (proc, { 72 }, numSamples, blockSize, sampleRate);
+    };
+
+    const auto a = render (64);
+    const auto b = render (1024);
+
+    EXPECT_TRUE (a.getMagnitude (0, numSamples) > 0.001f);
+
+    const auto worst = maxAbsDifference (a, b, numSamples);
+    EXPECT_MSG (! (worst > 0.0f),
+                "formant/warp render depends on block size: diff " + juce::String (worst, 8));
 }

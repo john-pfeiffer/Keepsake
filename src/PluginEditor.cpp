@@ -146,7 +146,7 @@ namespace keepsake
         addAndMakeVisible (rootPanel);
 
         // --- Cloud ----------------------------------------------------------
-        cloudPanel.setColumns (8); // one full-width row incl. Sync + Div
+        cloudPanel.setColumns (9); // one full-width row incl. Sync + Div + Formant
         cloudPanel.addKnob (knob (params::grainSize, "Size",
                                   "Grain Size - 5-250 ms, clamped to the kept window."));
         cloudPanel.addKnob (knob (params::grainDensity, "Density",
@@ -156,6 +156,10 @@ namespace keepsake
                                     "anchored to each note. Density is ignored while synced."));
         cloudPanel.addKnob (choice (params::grainDivision, "Div",
                                     "Musical division for synced grain emission."));
+        cloudPanel.addKnob (toggle (params::pitchMode, "Formant",
+                                    "Keys set the pitch through grain repetition while the source "
+                                    "timbre stays put - high notes stop chipmunking. Overrides "
+                                    "Density and Sync; Drift softens the pitch back into texture."));
         cloudPanel.addKnob (knob (params::grainDrift, "Drift",
                                   "Position jitter - randomises each grain's start within the kept window."));
         cloudPanel.addKnob (knob (params::grainShimmer, "Shimmer",

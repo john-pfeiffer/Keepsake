@@ -67,6 +67,13 @@ namespace keepsake
             // transient inside the window; Drift becomes the probability of
             // shuffling to a random in-window transient instead.
             bool snapToTransients = false;
+
+            // Formant mode (PSOLA-style): when > 0, grains play at their
+            // ORIGINAL rate - the source timbre never shifts - and are emitted
+            // once per played-pitch period, so the repetition rate IS the
+            // pitch. Overrides both density and tempo sync; playbackRatio is
+            // ignored (shimmer still detunes around unity). 0 = repitch mode.
+            double formantIntervalSamples = 0.0;
         };
 
         void prepare (double sampleRate);
@@ -97,7 +104,10 @@ namespace keepsake
             float windowMorph = 0.0f;
         };
 
-        void spawnGrain (const SourceAudio& source, const Settings& s, int windowStart, int windowLength) noexcept;
+        /** lateSamples: how far past the exact (fractional) spawn instant this
+            integer-sample spawn is; the grain starts pre-advanced by that much. */
+        void spawnGrain (const SourceAudio& source, const Settings& s,
+                         int windowStart, int windowLength, double lateSamples) noexcept;
         float readSource (const SourceAudio& source, int channel, double position) const noexcept;
 
         std::array<Grain, kMaxGrains> grains {};

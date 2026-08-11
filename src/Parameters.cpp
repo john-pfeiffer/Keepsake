@@ -145,6 +145,15 @@ namespace keepsake::params
             juce::StringArray { "Off", "Transients" },
             0));
 
+        // Formant mode is the anti-chipmunk: grains keep their ORIGINAL
+        // playback rate (timbre never moves) and the played key sets the
+        // pitch through the grain repetition rate instead (PSOLA-style).
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { pitchMode, 1 },
+            "Pitch Mode",
+            juce::StringArray { "Repitch", "Formant" },
+            0));
+
         // --- Tone -----------------------------------------------------------
         // Focus defaults to full Cloud so the plugin sounds exactly like M2 out of
         // the box. In M3 this is a plain equal-power blend; M4 adds the coupling.
@@ -284,6 +293,7 @@ namespace keepsake::params
         grainDivision = state.getRawParameterValue (params::grainDivision);
         warpMode  = state.getRawParameterValue (params::warpMode);
         grainSnap = state.getRawParameterValue (params::grainSnap);
+        pitchMode = state.getRawParameterValue (params::pitchMode);
         focus         = state.getRawParameterValue (params::focus);
         toneFrame     = state.getRawParameterValue (params::toneFrame);
         toneFrames    = state.getRawParameterValue (params::toneFrames);
