@@ -146,7 +146,7 @@ namespace keepsake
         addAndMakeVisible (rootPanel);
 
         // --- Cloud ----------------------------------------------------------
-        cloudPanel.setColumns (9); // one full-width row incl. Sync + Div + Formant
+        cloudPanel.setColumns (10); // one full-width row incl. Sync + Div + Formant + Lock
         cloudPanel.addKnob (knob (params::grainSize, "Size",
                                   "Grain Size - 5-250 ms, clamped to the kept window."));
         cloudPanel.addKnob (knob (params::grainDensity, "Density",
@@ -159,9 +159,18 @@ namespace keepsake
         cloudPanel.addKnob (toggle (params::pitchMode, "Formant",
                                     "Keys set the pitch through grain repetition while the source "
                                     "timbre stays put - high notes stop chipmunking. Overrides "
-                                    "Density and Sync; Drift softens the pitch back into texture."));
+                                    "Density and Sync, and is always phase-locked; Drift moves "
+                                    "which part of the keep each grain reads without loosening "
+                                    "the pitch."));
+        cloudPanel.addKnob (toggle (params::grainLock, "Lock",
+                                    "Locks grain starts and emission to the played pitch, so a "
+                                    "held note keeps its fundamental instead of scattering into "
+                                    "a wash. Turn it on for solid low end; off for texture. "
+                                    "Formant mode is always locked."));
         cloudPanel.addKnob (knob (params::grainDrift, "Drift",
-                                  "Position jitter - randomises each grain's start within the kept window."));
+                                  "Position jitter - randomises each grain's start within the kept "
+                                  "window. Under Lock it moves whole waveform cycles, so it "
+                                  "changes what a grain reads without blurring the pitch."));
         cloudPanel.addKnob (knob (params::grainShimmer, "Shimmer",
                                   "Pitch jitter - per-grain random detune in cents; "
                                   "high settings also add octave-up grains."));

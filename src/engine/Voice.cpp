@@ -436,6 +436,27 @@ namespace keepsake
         cloudSettings.spread          = (double) modded (mod::destSpread, params.grainSpread, snapshot.spread) * 0.01;
         cloudSettings.playbackRatio   = computePlaybackRatio();
 
+        // Phase lock. Root already declares what pitch the material is, so its
+        // period is the source's period - the lattice grain reads snap to.
+        //
+        // Formant mode locks unconditionally, as a correction rather than a
+        // feature: its emission clock is the played pitch, but every grain
+        // still drew an independent read start, so Drift re-randomised the
+        // carrier phase once per period and dismantled the pitch-synchronous
+        // behaviour the mode exists to provide. At the default Drift the
+        // played fundamental carried under a quarter of the note's energy.
+        // Repitch has no such clock, so it locks only when asked - which keeps
+        // every existing patch rendering exactly as it did.
+        {
+            const auto rootHz = analysis::noteFrequencyHz ((double) params.rootNote->load()
+                                                            + (double) params.rootCents->load() * 0.01);
+            const auto locked = params.pitchMode->load() >= 0.5f
+                                || params.grainLock->load() >= 0.5f;
+
+            cloudSettings.lockPeriodSamples = (locked && rootHz > 0.0) ? sampleRate / rootHz
+                                                                       : 0.0;
+        }
+
         // The blend gains come from the coupling curves: cloud side is the M3
         // equal-power cosine; tone ducks earlier than linear toward Cloud. Targets
         // smoothed so Focus motion does not zipper.

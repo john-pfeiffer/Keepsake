@@ -111,7 +111,7 @@ KTEST_CASE (processor_hasAllExpectedParametersExposedToTheHost)
         params::grainSize, params::grainDensity, params::grainDrift, params::grainShimmer,
         params::grainWindow, params::grainSpread,
         params::grainSync, params::grainDivision,
-        params::warpMode, params::grainSnap, params::pitchMode,
+        params::warpMode, params::grainSnap, params::pitchMode, params::grainLock,
         params::focus, params::toneFrame, params::toneFrames, params::toneFrameWrap,
         params::filterType, params::filterCutoff, params::filterResonance, params::filterKeytrack,
         params::env2Attack, params::env2Decay, params::env2Sustain, params::env2Release,
@@ -2238,4 +2238,193 @@ KTEST_CASE (processor_blockSizeIndependentWithFormantAndWarp)
     const auto worst = maxAbsDifference (a, b, numSamples);
     EXPECT_MSG (! (worst > 0.0f),
                 "formant/warp render depends on block size: diff " + juce::String (worst, 8));
+}
+
+// =============================================================================
+// Phase lock: grain coherence against the played pitch
+// =============================================================================
+
+namespace
+{
+    /** Fraction of a render's power sitting on the played pitch's harmonic
+        grid. This is the number that decides whether a held note reads as a
+        note - with a low end - or as a wash: a cloud whose emission rate is
+        unrelated to the note restarts the carrier at an arbitrary phase every
+        grain, and the harmonics it should be building up smear off the grid
+        into grain-rate sidebands instead.
+
+        Distinct from ktest::worstOffGridDb, which compares single peaks (the
+        alias question). Coherence is a question about where the ENERGY went,
+        so this integrates power rather than picking maxima. */
+    double onGridConcentration (const juce::AudioBuffer<float>& buffer,
+                                double playedHz,
+                                int startSample,
+                                double sampleRate,
+                                int fftOrder = 15)
+    {
+        const auto spectrum = ktest::powerSpectrumDb (buffer, startSample, fftOrder);
+        const auto binWidth = sampleRate / (double) (1 << fftOrder);
+
+        // +/-4 bins: the whole BH4 mainlobe, and still a small fraction of the
+        // gap between harmonics (75 bins apart at 110Hz), so a flat spectrum
+        // would score around 10% rather than passing by accident.
+        constexpr int guard = 4;
+        std::vector<bool> onGrid (spectrum.size(), false);
+
+        for (int m = 1; (double) m * playedHz < sampleRate * 0.5; ++m)
+        {
+            const auto centre = (int) std::round ((double) m * playedHz / binWidth);
+
+            for (int k = centre - guard; k <= centre + guard; ++k)
+                if (k >= 0 && k < (int) spectrum.size())
+                    onGrid[(size_t) k] = true;
+        }
+
+        double total = 0.0, harmonic = 0.0;
+
+        // From bin 1: DC carries the window's own leakage, not musical content.
+        for (int k = 1; k < (int) spectrum.size(); ++k)
+        {
+            const auto power = std::pow (10.0, (double) spectrum[(size_t) k] * 0.1);
+            total += power;
+
+            if (onGrid[(size_t) k])
+                harmonic += power;
+        }
+
+        return total > 0.0 ? harmonic / total : 0.0;
+    }
+}
+
+KTEST_CASE (grains_phaseLockConcentratesAHeldNoteOnItsHarmonics)
+{
+    // A bass note is the hard case - it is the register that needs a coherent
+    // fundamental, and the one a free-running emission clock damages most.
+    // Root A3 against the 220Hz source, played an octave down at A2 (110Hz),
+    // with the Keep opened up: at the 120ms default the drift range is barely
+    // two source cycles, which hides most of the problem the lock solves.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 96000;
+
+    auto render = [&] (bool lock)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate); // 220Hz sine
+        setParam (proc, params::rootNote, 57.0f); // A3 = 220Hz, matches the source
+        setParam (proc, params::captureLength, 1000.0f);
+        setParam (proc, params::grainSpread, 0.0f); // per-grain pan is its own AM
+        setParam (proc, params::grainLock, lock ? 1.0f : 0.0f);
+        return renderMidi (proc, { 45 }, numSamples, 512, sampleRate); // A2 = 110Hz
+    };
+
+    const auto loose = render (false);
+    const auto locked = render (true);
+    EXPECT_TRUE (ktest::isFinite (loose) && ktest::isFinite (locked));
+    EXPECT_TRUE (locked.getMagnitude (0, numSamples) > 0.001f);
+
+    const auto looseOnGrid = onGridConcentration (loose, 110.0, 24000, sampleRate);
+    const auto lockedOnGrid = onGridConcentration (locked, 110.0, 24000, sampleRate);
+
+    EXPECT_MSG (lockedOnGrid > 0.85,
+                "phase lock did not concentrate the note: only "
+                    + juce::String (lockedOnGrid * 100.0, 1) + "% on the 110Hz grid");
+    EXPECT_MSG (lockedOnGrid > looseOnGrid + 0.12,
+                "phase lock barely moved the note: "
+                    + juce::String (looseOnGrid * 100.0, 1) + "% -> "
+                    + juce::String (lockedOnGrid * 100.0, 1) + "% on grid");
+}
+
+KTEST_CASE (processor_blockSizeIndependentWithPhaseLock)
+{
+    // The lock rounds the emission interval to a fractional number of samples
+    // and pre-advances each grain by the spawn quantisation error, which is
+    // exactly the kind of accumulator that goes block-size dependent if the
+    // bookkeeping is done per block instead of per sample.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 12288;
+
+    auto render = [&] (int blockSize)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::rootNote, 57.0f);
+        setParam (proc, params::grainLock, 1.0f);
+        return renderMidi (proc, { 48 }, numSamples, blockSize, sampleRate);
+    };
+
+    const auto a = render (64);
+    const auto b = render (1024);
+
+    EXPECT_TRUE (a.getMagnitude (0, numSamples) > 0.001f);
+
+    const auto worst = maxAbsDifference (a, b, numSamples);
+    EXPECT_MSG (! (worst > 0.0f),
+                "phase-locked render depends on block size: diff " + juce::String (worst, 8));
+}
+
+KTEST_CASE (grains_phaseLockLeavesTheSyncGridExact)
+{
+    // Lock rounds the FREE-running interval to whole pitch periods. Sync's
+    // grid is a rhythm and must not be pulled off the beat to suit the note,
+    // so the two features have to coexist: locking a synced cloud may change
+    // its texture, but the grain rate has to stay on the division.
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 96000;
+
+    auto render = [&] (bool lock)
+    {
+        KeepsakeProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+        giveProcessorASource (proc, sampleRate);
+        setParam (proc, params::rootNote, 57.0f);
+        setParam (proc, params::grainSync, 1.0f);   // 1/8 at the default 120 BPM
+        setParam (proc, params::grainSize, 20.0f);  // short: one burst per grain
+        setParam (proc, params::grainSpread, 0.0f);
+        setParam (proc, params::grainLock, lock ? 1.0f : 0.0f);
+        return renderMidi (proc, { 45 }, numSamples, 512, sampleRate);
+    };
+
+    // Count envelope bursts over a whole second and compare the rates. A 1/8
+    // at 120 BPM is 4 grains/s; the count must not move when Lock comes on.
+    auto burstsPerSecond = [&] (const juce::AudioBuffer<float>& buffer)
+    {
+        const auto* d = buffer.getReadPointer (0);
+        const auto from = 24000, to = 72000;
+
+        float peak = 0.0f;
+        for (int i = from; i < to; ++i)
+            peak = juce::jmax (peak, std::abs (d[i]));
+
+        // Count onsets with a 100ms lockout: longer than a 20ms grain (so its
+        // own zero crossings cannot re-trigger) and shorter than the 250ms
+        // grid (so no real onset is swallowed).
+        const auto gate = peak * 0.25f;
+        int bursts = 0, refractory = 0;
+
+        for (int i = from; i < to; ++i)
+        {
+            if (refractory > 0)
+            {
+                --refractory;
+                continue;
+            }
+
+            if (std::abs (d[i]) > gate)
+            {
+                ++bursts;
+                refractory = 4800;
+            }
+        }
+
+        return bursts;
+    };
+
+    const auto loose = burstsPerSecond (render (false));
+    const auto locked = burstsPerSecond (render (true));
+
+    EXPECT_MSG (loose > 0 && locked == loose,
+                "phase lock moved the sync grid: " + juce::String (loose)
+                    + " bursts unlocked vs " + juce::String (locked) + " locked");
 }

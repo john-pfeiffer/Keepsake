@@ -173,6 +173,32 @@ namespace keepsake
             readStart = (double) windowStart + s.drift * positionSpan * rng.nextDouble();
         }
 
+        // Phase lock, position side: snap the offset into the window to a whole
+        // number of source periods. Drift then chooses WHICH cycle a grain
+        // reads instead of where inside a cycle it lands - the distinction is
+        // the whole ballgame for a held note, because a read start that moves
+        // by a fraction of a period restarts the carrier at a new phase and
+        // scatters the fundamental into grain-rate sidebands.
+        if (s.lockPeriodSamples > 0.0)
+        {
+            const auto offset = readStart - (double) windowStart;
+
+            // Floor the ceiling to a whole period: stepping down to the last
+            // one that fits keeps the grain inside the window without landing
+            // it off-lattice. A span shorter than one period collapses to 0,
+            // which is coherent by construction (every grain starts together).
+            const auto highest = std::floor (positionSpan / s.lockPeriodSamples)
+                                   * s.lockPeriodSamples;
+
+            readStart = (double) windowStart
+                          + juce::jlimit (0.0, highest,
+                                          std::round (offset / s.lockPeriodSamples)
+                                            * s.lockPeriodSamples);
+        }
+
+        // Snap-to-transients overrides the lock outright: landing on the hit is
+        // the entire point there, and a slice that misses its attack to stay in
+        // phase is the wrong trade.
         if (s.snapToTransients && ! source.transients.empty())
         {
             // Quantise to the detected hits inside the window. Drift doubles
@@ -259,9 +285,30 @@ namespace keepsake
         // nor the tempo grid may touch it.
         const auto formant = settings.formantIntervalSamples > 0.0;
         const auto synced = ! formant && settings.syncIntervalSamples > 0.0;
-        const auto samplesPerGrain = formant ? juce::jmax (2.0, settings.formantIntervalSamples)
-                                   : synced  ? settings.syncIntervalSamples
-                                             : currentSampleRate / density;
+        auto samplesPerGrain = formant ? juce::jmax (2.0, settings.formantIntervalSamples)
+                             : synced  ? settings.syncIntervalSamples
+                                       : currentSampleRate / density;
+
+        // Phase lock, emission side. Round the free-running interval to a whole
+        // number of played-pitch periods: grains then re-enter the waveform at
+        // the same phase every time and their fundamentals add, instead of
+        // arriving at an interval unrelated to the note and summing to a cloud
+        // of sidebands. Density still chooses the rate - it just lands on the
+        // nearest rate that happens to be coherent.
+        //
+        // Sync is left exact (a rhythm that drifts to suit the pitch is not a
+        // rhythm) and Formant is already exactly one played period, so only
+        // Free mode has anything to round.
+        const auto locked = settings.lockPeriodSamples > 0.0;
+
+        if (locked && ! formant && ! synced)
+        {
+            const auto playedPeriod = settings.lockPeriodSamples
+                                        / juce::jmax (1.0e-6, std::abs (settings.playbackRatio));
+
+            samplesPerGrain = juce::jmax (1.0, std::round (samplesPerGrain / playedPeriod))
+                                * playedPeriod;
+        }
 
         // Grains are mutually uncorrelated, so their powers sum: compensating by
         // 1/sqrt(overlap) keeps perceived level roughly constant while Density and
@@ -296,9 +343,12 @@ namespace keepsake
                 // spawn grid quantised to whole samples collapses the played
                 // pitch into a subharmonic comb (440Hz at 48k -> a 40Hz
                 // buzz). Pre-advancing each grain by its quantisation error
-                // keeps the emission exactly periodic. Other modes stay at
-                // 0 so their output is bit-identical to previous builds.
-                const auto late = formant ? -samplesUntilNextGrain : 0.0;
+                // keeps the emission exactly periodic. Phase lock buys its
+                // coherence the same way and needs the same correction - a
+                // period-quantised interval is fractional too. Unlocked
+                // repitch stays at 0, so its output is bit-identical to
+                // previous builds.
+                const auto late = (formant || locked) ? -samplesUntilNextGrain : 0.0;
 
                 spawnGrain (*source, settings, window.startSample, window.numSamples, late);
 
@@ -306,8 +356,11 @@ namespace keepsake
                 // not buzz periodically. Sync mode is EXACT - the musical grid
                 // is the point, and reset() at note-on anchors it to the note.
                 // Formant mode is exact too: interval jitter there is pitch
-                // jitter.
-                const auto jitter = (synced || formant) ? 1.0 : 0.9 + 0.2 * rng.nextDouble();
+                // jitter, and so is it under phase lock - the buzz the jitter
+                // exists to break up IS the note once the interval is locked
+                // to the pitch.
+                const auto jitter = (synced || formant || locked)
+                                      ? 1.0 : 0.9 + 0.2 * rng.nextDouble();
                 samplesUntilNextGrain += samplesPerGrain * jitter;
             }
 

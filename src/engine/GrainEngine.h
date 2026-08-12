@@ -74,6 +74,24 @@ namespace keepsake
             // pitch. Overrides both density and tempo sync; playbackRatio is
             // ignored (shimmer still detunes around unity). 0 = repitch mode.
             double formantIntervalSamples = 0.0;
+
+            // Phase lock: when > 0, this is the SOURCE's fundamental period in
+            // samples (taken from Root, which is already the "what pitch this
+            // material is" contract). Two things follow from it:
+            //
+            //   - grain read starts snap to a whole number of these, so a
+            //     grain never re-enters the waveform mid-cycle. Shifting a
+            //     read position by whole source periods is phase-neutral at
+            //     any playback rate, so this holds in both pitch modes.
+            //   - the FREE-RUNNING emission interval snaps to a whole number
+            //     of PLAYED periods (source period / playbackRatio), so
+            //     successive grains stack in phase rather than at an arbitrary
+            //     one. Sync is exempt (its grid is the point) and Formant
+            //     needs no help (its interval already IS one played period).
+            //
+            // Off by default and by 0, which keeps every unlocked render
+            // bit-identical to the pre-lock engine.
+            double lockPeriodSamples = 0.0;
         };
 
         void prepare (double sampleRate);

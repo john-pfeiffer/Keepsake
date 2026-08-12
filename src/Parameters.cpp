@@ -154,6 +154,21 @@ namespace keepsake::params
             juce::StringArray { "Repitch", "Formant" },
             0));
 
+        // Phase lock: grain read starts snap to whole periods of the source
+        // (taken from Root), and the free-running emission interval snaps to
+        // whole periods of the played pitch. Without it the emission clock is
+        // unrelated to the note, so every grain re-enters the waveform at an
+        // arbitrary phase and a held note scatters most of its energy into
+        // grain-rate sidebands - audible as no low end and an inescapable
+        // wash. Defaults Off: it changes the character of the cloud, and every
+        // existing patch must keep rendering exactly as it did. Formant mode
+        // locks regardless (see Voice::evaluateControlTick).
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { grainLock, 1 },
+            "Lock",
+            juce::StringArray { "Off", "On" },
+            0));
+
         // --- Tone -----------------------------------------------------------
         // Focus defaults to full Cloud so the plugin sounds exactly like M2 out of
         // the box. In M3 this is a plain equal-power blend; M4 adds the coupling.
@@ -294,6 +309,7 @@ namespace keepsake::params
         warpMode  = state.getRawParameterValue (params::warpMode);
         grainSnap = state.getRawParameterValue (params::grainSnap);
         pitchMode = state.getRawParameterValue (params::pitchMode);
+        grainLock = state.getRawParameterValue (params::grainLock);
         focus         = state.getRawParameterValue (params::focus);
         toneFrame     = state.getRawParameterValue (params::toneFrame);
         toneFrames    = state.getRawParameterValue (params::toneFrames);

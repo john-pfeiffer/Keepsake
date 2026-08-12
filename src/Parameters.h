@@ -45,6 +45,7 @@ namespace keepsake::params
 
     // --- Cloud pitch behaviour ----------------------------------------------
     inline constexpr auto pitchMode = "pitchMode"; // choice: Repitch/Formant
+    inline constexpr auto grainLock = "grainLock"; // choice: Off/On (phase lock)
 
     // --- Tone (wavetable) engine --------------------------------------------
     inline constexpr auto focus         = "focus";         // 0..1 Cloud->Tone
@@ -132,6 +133,7 @@ namespace keepsake::params
         std::atomic<float>* warpMode  = nullptr; // choice index into the bars table
         std::atomic<float>* grainSnap = nullptr; // 0 Off, 1 Transients
         std::atomic<float>* pitchMode = nullptr; // 0 Repitch, 1 Formant
+        std::atomic<float>* grainLock = nullptr; // 0 Off, 1 On (phase lock)
         std::atomic<float>* focus         = nullptr;
         std::atomic<float>* toneFrame     = nullptr;
         std::atomic<float>* toneFrames    = nullptr; // choice index 0..3 -> {2,4,8,16}

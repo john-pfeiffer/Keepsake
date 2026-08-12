@@ -194,8 +194,25 @@ rows within one run, not across READMEs.
 - **Formant** (CLOUD row) is the fix for high notes sounding chipmunked. Grains keep
   their original playback rate, so the source timbre stays put wherever you play,
   and the pitch comes from the grain repetition rate instead. It overrides Density
-  and Sync, since its emission clock *is* the pitch; Drift smears the starts and
-  dissolves the note back into texture.
+  and Sync, since its emission clock *is* the pitch, and it is always phase-locked
+  (below); Drift moves which part of the keep each grain reads without loosening
+  the note.
+- **Lock** (CLOUD row) is the switch to reach for when a patch has no low end, or
+  when everything you write sounds like it is in a room you cannot turn off. Both
+  are the same thing: with Lock off, grains are emitted at a rate set by Density
+  that has nothing to do with the note, so every grain re-enters the waveform at
+  an arbitrary phase and the fundamental you are trying to hear scatters into
+  grain-rate sidebands. Measured on a held A2 over a 1 s Keep, 70% of the render
+  sits on the note's harmonic grid unlocked and 87% locked — and the gap widens
+  the longer the Keep, because Drift then has more cycles to scatter across.
+  Lock snaps
+  grain starts to whole cycles of the source (Root says which pitch that is) and
+  rounds the free-running emission interval to whole cycles of the played note, so
+  grains stack in phase and the note adds up. Density still sets the rate; it just
+  lands on the nearest rate that is coherent. Off is still the right answer when
+  you *want* the cloud — that texture is the instrument's whole point, it just
+  should not be the only thing it can do. Sync keeps its exact grid either way: a
+  rhythm is not allowed to drift to suit the pitch.
 - **Presets** live in the top bar: type a name, *Save*; step with **< >** or pick
   from the list. The built-in presets come first and are parameter-only — they
   re-dress the keepsake you already have rather than replacing it. Presets you save
@@ -236,6 +253,22 @@ A few decisions worth knowing before editing:
   to the APVTS. Pitch is the one exception (additive semitones, ±12 st, feeding
   both engines). Place modulation affects Cloud only — Tone extraction follows the
   base parameter, by design (see the plan notes in the M4 commit).
+- **Phase lock is one number, `Settings::lockPeriodSamples`** — the source's
+  fundamental period, taken from Root. Shifting a read position by whole source
+  periods is phase-neutral at any playback rate, which is why the same lattice
+  serves both pitch modes; the emission side divides it by the playback ratio to
+  get the played period. Formant sets it unconditionally: emitting once per played
+  period is only pitch-synchronous if grains also enter the waveform in phase, and
+  before this they drew an independent read start each time, so Drift (on by
+  default, and on in the Formant Pad preset) re-randomised the carrier once per
+  period. Note that this half is reasoned and unmeasured: the on-grid metric the
+  Repitch test uses does not apply to Formant, whose dominant line stays at the
+  source pitch by design (see `grains_formantModeHoldsTimbreWhileKeysSetPitch`),
+  so there is no test asserting the improvement yet. Repitch sets it only from the
+  Lock parameter, so every pre-existing patch renders exactly as it did. Locked
+  emission needs the same sub-sample spawn pre-advance Formant already used — a
+  period-quantised interval is fractional, and quantising it to whole samples
+  collapses the pitch into a subharmonic comb.
 - **Every AudioParameterChoice list is frozen ABI** — host automation stores
   index/(N−1), so changing any list's length silently remaps recorded automation.
   Mod source/dest, LFO shapes/divisions, filter types, voice modes: final.
